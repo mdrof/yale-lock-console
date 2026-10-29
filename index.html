@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Yale YMH70A 控制台</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#252a34; --text:#e6e9ef;
+    --muted:#8b93a1; --accent:#4f9dff; --ok:#3ddc84; --warn:#ffb020; --err:#ff5c5c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+    padding:16px 14px 40px;max-width:560px;margin:0 auto;
+  }
+  h1{font-size:18px;margin:4px 0 2px;font-weight:600}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .row{display:flex;gap:10px;align-items:center}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  input{
+    width:100%;background:#0c0e12;border:1px solid var(--line);border-radius:10px;
+    color:var(--text);padding:11px 12px;font:13px/1.4 ui-monospace,Menlo,monospace;
+  }
+  button{
+    appearance:none;border:none;border-radius:12px;padding:14px 16px;font-size:15px;
+    font-weight:600;color:#0b0d11;background:var(--accent);width:100%;
+    margin-top:10px;transition:opacity .15s;
+  }
+  button:active{opacity:.7}
+  button:disabled{opacity:.35}
+  button.ghost{background:#232936;color:var(--text)}
+  button.small{padding:11px;font-size:13px;margin-top:8px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .grid2 button{margin-top:0}
+  .status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#4a5160}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  #log{
+    font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;
+    max-height:280px;overflow:auto;margin:0;color:#b9c2d0;
+  }
+  .logline{padding:3px 0;border-bottom:1px solid #1d222b}
+  .t{color:#5d6675;margin-right:6px}
+  .send{color:var(--accent)}
+  .recv{color:var(--ok)}
+  .errline{color:var(--err)}
+  .hint{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6}
+  code{background:#0c0e12;padding:1px 5px;border-radius:5px;font-size:12px}
+</style>
+</head>
+<body>
+
+<h1>Yale YMH70A 控制台</h1>
+<div class="sub">Web Bluetooth · 本地直连 · 不经过任何云端</div>
+
+<div class="card">
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
+  <button id="btnConnect">连接门锁</button>
+</div>
+
+<div class="card">
+  <label>密钥（32 位十六进制）</label>
+  <input id="key" value="00112233445566778899AABBCCDDEEFF" spellcheck="false">
+  <div class="row" style="margin-top:10px">
+    <div style="flex:1">
+      <label>槽位</label>
+      <input id="slot" value="1" inputmode="numeric">
+    </div>
+  </div>
+  <button id="btnProv" class="ghost">一键配网（写入密钥）</button>
+  <div class="hint">先在面板按 <code>M → R → 7</code>，听到「登记蓝牙」后立刻点这里。</div>
+</div>
+
+<div class="card">
+  <label>控制</label>
+  <div class="grid2">
+    <button id="btnUnlock" class="ghost small">开锁</button>
+    <button id="btnLock" class="ghost small">上锁</button>
+  </div>
+  <button id="btnStatus" class="ghost small">读取状态</button>
+</div>
+
+<div class="card">
+  <label>单步（调试用）</label>
+  <div class="grid2">
+    <button data-step="init" class="ghost small">INIT</button>
+    <button data-step="lower" class="ghost small">写下半</button>
+  </div>
+  <div class="grid2" style="margin-top:10px">
+    <button data-step="upper" class="ghost small">写上半</button>
+    <button data-step="commit" class="ghost small">提交</button>
+  </div>
+</div>
+
+<div class="card">
+  <label>日志</label>
+  <div id="log"></div>
+</div>
+
+<script>
+const SERVICE = '0000fe24-0000-1000-8000-00805f9b34fb';
+const CHAR_WRITE = 'bd4ac611-0b45-11e3-8ffd-0800200c9a66';
+const CHAR_READ  = 'bd4ac612-0b45-11e3-8ffd-0800200c9a66';
+
+let device = null, server = null, writeChar = null, notifyChar = null;
+
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+
+function log(text, cls='') {
+  const t = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+  const div = document.createElement('div');
+  div.className = 'logline';
+  div.innerHTML = `<span class="t">${t}</span><span class="${cls}">${text}</span>`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+const fromHex = s => {
+  const clean = s.replace(/[^0-9a-fA-F]/g,'');
+  if (clean.length % 2) throw new Error('十六进制长度必须是偶数');
+  const out = new Uint8Array(clean.length/2);
+  for (let i=0;i<out.length;i++) out[i] = parseInt(clean.substr(i*2,2),16);
+  return out;
+};
+
+function u32le(v) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, v >>> 0, true);
+  return b;
+}
+function secChecksum(f) {
+  const dv = new DataView(f.buffer);
+  const s = (dv.getUint32(0,true) + dv.getUint32(4,true) + dv.getUint32(8,true)) >>> 0;
+  return ((~s) + 1) >>> 0;
+}
+function secureFrame(type, payload, slot) {
+  const f = new Uint8Array(18);
+  f.set(u32le(type), 0);
+  f.set(payload.subarray(0,8), 4);
+  f.set(u32le(secChecksum(f)), 12);
+  f[16] = 0x0F;
+  f[17] = slot & 0xFF;
+  return f;
+}
+function commitFrame(key, slot) {
+  const dv = new DataView(key.buffer, key.byteOffset, key.byteLength);
+  let s = 0;
+  for (let i=0;i<4;i++) s = (s + dv.getUint32(i*4,true)) >>> 0;
+  const f = new Uint8Array(18);
+  f.set(u32le(0x15), 0);
+  f.set(u32le(((~s)+1) >>> 0), 4);
+  f[8] = slot & 0xFF;
+  f[9] = (slot >> 8) & 0xFF;
+  f.set(u32le(secChecksum(f)), 12);
+  f[16] = 0x0F;
+  f[17] = 0x00;
+  return f;
+}
+function plainFrame(opcode, tail16=0x02) {
+  const f = new Uint8Array(18);
+  f[0] = 0xEE; f[1] = opcode; f[2] = 0; f[16] = tail16; f[17] = 0;
+  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
+  f[3] = (0 - sum) & 0xFF;
+  return f;
+}
+
+function setConnected(on, name='') {
+  $('dot').classList.toggle('on', on);
+  $('statusText').textContent = on ? `已连接 ${name}` : '未连接';
+  $('btnConnect').textContent = on ? '断开' : '连接门锁';
+}
+
+async function connect() {
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+    setConnected(false);
+    log('已断开', '');
+    return;
+  }
+  try {
+    log('正在请求设备…');
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [SERVICE]
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      setConnected(false);
+      log('连接已断开', 'errline');
+    });
+    log(`选中：${device.name || '(无名)'}`);
+    server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    writeChar = await service.getCharacteristic(CHAR_WRITE);
+    notifyChar = await service.getCharacteristic(CHAR_READ);
+    await notifyChar.startNotifications();
+    notifyChar.addEventListener('characteristicvaluechanged', e => {
+      log(`← ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
+    });
+    setConnected(true, device.name || '');
+    log('已连接并订阅通知', 'recv');
+  } catch (e) {
+    log(`连接失败：${e.message}`, 'errline');
+  }
+}
+
+async function write(frame, label) {
+  if (!writeChar) { log('请先连接', 'errline'); return false; }
+  try {
+    try {
+      await writeChar.writeValueWithResponse(frame);
+    } catch (e1) {
+      await writeChar.writeValueWithoutResponse(frame);
+    }
+    log(`→ ${label}  ${hex(frame)}`, 'send');
+    return true;
+  } catch (e) {
+    log(`写入失败（${label}）：${e.message}`, 'errline');
+    return false;
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function readKeySlot() {
+  const key = fromHex($('key').value);
+  if (key.length !== 16) throw new Error('密钥必须是 16 字节（32 位 hex）');
+  const slot = parseInt($('slot').value, 10) || 1;
+  return { key, slot };
+}
+
+async function provision() {
+  let key, slot;
+  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
+  log('开始配网…');
+  if (!await write(secureFrame(0x03, new Uint8Array(8), slot), 'INIT')) return;
+  await sleep(300);
+  if (!await write(secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
+  await sleep(300);
+  if (!await write(secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
+  await sleep(300);
+  if (!await write(commitFrame(key, slot), 'COMMIT')) return;
+  log('四帧已发完，等待锁的回应…', 'recv');
+}
+
+async function sendStep(step) {
+  let key, slot;
+  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
+  const frames = {
+    init:   [secureFrame(0x03, new Uint8Array(8), slot), 'INIT'],
+    lower:  [secureFrame(0x11, key.subarray(0,8), 0), 'LOWER'],
+    upper:  [secureFrame(0x13, key.subarray(8,16), 0), 'UPPER'],
+    commit: [commitFrame(key, slot), 'COMMIT'],
+  };
+  const [f, label] = frames[step];
+  await write(f, label);
+}
+
+$('btnConnect').onclick = connect;
+$('btnProv').onclick = provision;
+$('btnUnlock').onclick = () => write(plainFrame(0x0A), 'UNLOCK');
+$('btnLock').onclick = () => write(plainFrame(0x0B), 'LOCK');
+$('btnStatus').onclick = () => write(plainFrame(0x02), 'GETSTATUS');
+document.querySelectorAll('[data-step]').forEach(b => {
+  b.onclick = () => sendStep(b.dataset.step);
+});
+
+if (!navigator.bluetooth) {
+  log('这个浏览器不支持 Web Bluetooth，请用 Android Chrome 或桌面 Chrome。', 'errline');
+  $('btnConnect').disabled = true;
+}
+</script>
+</body>
+</html>
