@@ -62,11 +62,22 @@
 </div>
 
 <div class="card">
+  <label>安全测试（先跑这两个）</label>
+  <button id="btnReadAll" class="ghost">读取四个特征值</button>
+  <button id="btnTestStatus" class="ghost">试发 GETSTATUS</button>
+  <div class="hint">
+    <b>读取</b>：看锁是否预置了挑战数据。<br>
+    <b>GETSTATUS</b>：最无害的命令，只判断链路通不通——如果它也让连接断开，说明认证前任何命令都被拒。
+  </div>
+</div>
+
+<div class="card">
   <label>自动试探（先跑这个）</label>
   <button id="btnProbe">试探 INIT 变体</button>
+  <button id="btnProv2" class="ghost">配网 v2（先设客户端地址）</button>
   <div class="hint">
     连上锁 → 面板按 <code>M → R → 7</code> 听到「登记蓝牙」→ 点这里。<br>
-    它会依次试几种 INIT 参数，看哪一种不会让锁断开。
+    v2 会先发 <code>0x7D SetClientBLEAddress</code>，再走 INIT / 写密钥 / 提交。
   </div>
 </div>
 
@@ -186,6 +197,15 @@ function plainFrame(opcode, tail16=0x02) {
   f[3] = (0 - sum) & 0xFF;
   return f;
 }
+// 0x7D SetClientBLEAddress：明文帧，[4]=arg1，[5..10]=MAC
+function setClientAddrFrame(arg1, mac) {
+  const f = plainFrame(0x7D);
+  f[4] = arg1 & 0xFF;
+  f.set(mac.subarray(0, 6), 5);
+  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
+  f[3] = (0 - sum) & 0xFF;
+  return f;
+}
 
 function setConnected(on, name='') {
   $('dot').classList.toggle('on', on);
@@ -293,6 +313,38 @@ function readKeySlot() {
   return { key, slot };
 }
 
+// —— 安全测试：读特征值 + 发 GETSTATUS ——
+async function readAll() {
+  if (!await ensureConnected()) return;
+  const targets = [
+    ['明文读 bd4ac612', notifyChar],
+    ['加密读 bd4ac614', secNotifyChar],
+    ['明文写 bd4ac611', writeChar],
+    ['加密写 bd4ac613', secWriteChar],
+  ];
+  for (const [label, ch] of targets) {
+    if (!ch) { log(`${label}：不存在`, 'errline'); continue; }
+    try {
+      const v = await ch.readValue();
+      log(`${label}：${hex(new Uint8Array(v.buffer))}`, 'recv');
+    } catch (e) {
+      log(`${label}：读取失败（${e.message}）`, 'errline');
+    }
+  }
+}
+
+async function testStatus() {
+  if (!await ensureConnected()) return;
+  const ok = await writeTo(writeChar, plainFrame(0x02), 'GETSTATUS');
+  if (!ok) return;
+  await sleep(1500);
+  if (device.gatt.connected) {
+    log('✔ 连接保持住了 —— 链路可用，问题在具体命令', 'recv');
+  } else {
+    log('✘ 连接被断开 —— 认证前任何命令都被拒', 'errline');
+  }
+}
+
 async function probe() {
   if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
   const variants = [
@@ -337,6 +389,32 @@ async function provision() {
   log('四帧已发完，等待锁的回应…', 'recv');
 }
 
+// 配网 v2：先 SetClientBLEAddress，再走密钥流程
+async function provV2() {
+  let key, slot;
+  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
+  const mac = fromHex('E86CC7104671'); // 锁自身地址，先拿它试
+  if (!await ensureConnected()) return;
+  log('=== 配网 v2 开始 ===');
+
+  const step = async (frame, label) => {
+    if (!await ensureConnected()) { log(`✘ ${label} 之前就断了`, 'errline'); return false; }
+    await writeTo(writeChar, frame, label);
+    await sleep(600);
+    const alive = device.gatt.connected;
+    if (!alive) log(`✘ ${label} 之后被断开`, 'errline');
+    else log(`✔ ${label} 通过`, 'recv');
+    return alive;
+  };
+
+  if (!await step(setClientAddrFrame(0, mac), 'SET_CLIENT_ADDR')) return;
+  if (!await step(initFrame(0, 0, slot), 'INIT')) return;
+  if (!await step(secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
+  if (!await step(secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
+  if (!await step(commitFrame(key, slot), 'COMMIT')) return;
+  log('=== 四步全部通过，密钥应该写进去了 ===', 'recv');
+}
+
 async function sendStep(step) {
   let key, slot;
   try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
@@ -352,8 +430,11 @@ async function sendStep(step) {
 }
 
 $('btnConnect').onclick = connect;
+$('btnReadAll').onclick = readAll;
+$('btnTestStatus').onclick = testStatus;
 $('btnProbe').onclick = probe;
 $('btnProv').onclick = provision;
+$('btnProv2').onclick = provV2;
 $('btnUnlock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0A), 'UNLOCK'); };
 $('btnLock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0B), 'LOCK'); };
 $('btnStatus').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x02), 'GETSTATUS'); };
