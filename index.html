@@ -7,7 +7,7 @@
 <style>
   :root{
     --bg:#0f1115; --card:#171a21; --line:#252a34; --text:#e6e9ef;
-    --muted:#8b93a1; --accent:#4f9dff; --ok:#3ddc84; --warn:#ffb020; --err:#ff5c5c;
+    --muted:#8b93a1; --accent:#4f9dff; --ok:#3ddc84; --err:#ff5c5c;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   body{
@@ -40,7 +40,7 @@
   .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
   #log{
     font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;
-    max-height:280px;overflow:auto;margin:0;color:#b9c2d0;
+    max-height:320px;overflow:auto;margin:0;color:#b9c2d0;
   }
   .logline{padding:3px 0;border-bottom:1px solid #1d222b}
   .t{color:#5d6675;margin-right:6px}
@@ -62,6 +62,15 @@
 </div>
 
 <div class="card">
+  <label>自动试探（先跑这个）</label>
+  <button id="btnProbe">试探 INIT 变体</button>
+  <div class="hint">
+    连上锁 → 面板按 <code>M → R → 7</code> 听到「登记蓝牙」→ 点这里。<br>
+    它会依次试几种 INIT 参数，看哪一种不会让锁断开。
+  </div>
+</div>
+
+<div class="card">
   <label>密钥（32 位十六进制）</label>
   <input id="key" value="00112233445566778899AABBCCDDEEFF" spellcheck="false">
   <div class="row" style="margin-top:10px">
@@ -71,7 +80,6 @@
     </div>
   </div>
   <button id="btnProv" class="ghost">一键配网（写入密钥）</button>
-  <div class="hint">先在面板按 <code>M → R → 7</code>，听到「登记蓝牙」后立刻点这里。</div>
 </div>
 
 <div class="card">
@@ -104,8 +112,12 @@
 const SERVICE = '0000fe24-0000-1000-8000-00805f9b34fb';
 const CHAR_WRITE = 'bd4ac611-0b45-11e3-8ffd-0800200c9a66';
 const CHAR_READ  = 'bd4ac612-0b45-11e3-8ffd-0800200c9a66';
+const CHAR_SEC_WRITE = 'bd4ac613-0b45-11e3-8ffd-0800200c9a66';
+const CHAR_SEC_READ  = 'bd4ac614-0b45-11e3-8ffd-0800200c9a66';
 
-let device = null, server = null, writeChar = null, notifyChar = null;
+let device = null;
+let writeChar = null, notifyChar = null, secWriteChar = null, secNotifyChar = null;
+let listenerBound = false;
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
@@ -147,6 +159,12 @@ function secureFrame(type, payload, slot) {
   f[17] = slot & 0xFF;
   return f;
 }
+function initFrame(a1, a2, slot) {
+  const p = new Uint8Array(8);
+  p.set(u32le(a1), 0);
+  p.set(u32le(a2), 4);
+  return secureFrame(0x03, p, slot);
+}
 function commitFrame(key, slot) {
   const dv = new DataView(key.buffer, key.byteOffset, key.byteLength);
   let s = 0;
@@ -175,32 +193,72 @@ function setConnected(on, name='') {
   $('btnConnect').textContent = on ? '断开' : '连接门锁';
 }
 
+function bindDisconnect() {
+  if (listenerBound) return;
+  device.addEventListener('gattserverdisconnected', () => {
+    setConnected(false);
+    log('连接已断开', 'errline');
+  });
+  listenerBound = true;
+}
+
+async function setupChars() {
+  const service = await device.gatt.getPrimaryService(SERVICE);
+  writeChar = await service.getCharacteristic(CHAR_WRITE);
+  notifyChar = await service.getCharacteristic(CHAR_READ);
+  try {
+    secWriteChar = await service.getCharacteristic(CHAR_SEC_WRITE);
+    secNotifyChar = await service.getCharacteristic(CHAR_SEC_READ);
+  } catch (e) { secWriteChar = null; secNotifyChar = null; }
+  try {
+    await notifyChar.startNotifications();
+    notifyChar.addEventListener('characteristicvaluechanged', e => {
+      log(`← [明文] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
+    });
+  } catch (e) { /* ignore */ }
+  if (secNotifyChar) {
+    try {
+      await secNotifyChar.startNotifications();
+      secNotifyChar.addEventListener('characteristicvaluechanged', e => {
+        log(`← [加密] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
+      });
+    } catch (e) { /* ignore */ }
+  }
+}
+
+async function ensureConnected() {
+  if (device && device.gatt.connected) return true;
+  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return false; }
+  try {
+    await device.gatt.connect();
+    await setupChars();
+    setConnected(true, device.name || '');
+    return true;
+  } catch (e) {
+    log(`重连失败：${e.message}`, 'errline');
+    return false;
+  }
+}
+
 async function connect() {
   if (device && device.gatt.connected) {
     device.gatt.disconnect();
     setConnected(false);
-    log('已断开', '');
+    log('已断开');
     return;
   }
   try {
     log('正在请求设备…');
-    device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: [SERVICE]
-    });
-    device.addEventListener('gattserverdisconnected', () => {
-      setConnected(false);
-      log('连接已断开', 'errline');
-    });
-    log(`选中：${device.name || '(无名)'}`);
-    server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE);
-    writeChar = await service.getCharacteristic(CHAR_WRITE);
-    notifyChar = await service.getCharacteristic(CHAR_READ);
-    await notifyChar.startNotifications();
-    notifyChar.addEventListener('characteristicvaluechanged', e => {
-      log(`← ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
-    });
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [SERVICE]
+      });
+      bindDisconnect();
+      log(`选中：${device.name || '(无名)'}`);
+    }
+    await device.gatt.connect();
+    await setupChars();
     setConnected(true, device.name || '');
     log('已连接并订阅通知', 'recv');
   } catch (e) {
@@ -208,15 +266,17 @@ async function connect() {
   }
 }
 
-async function write(frame, label) {
-  if (!writeChar) { log('请先连接', 'errline'); return false; }
+async function writeTo(char, frame, label) {
+  if (!char) { log('目标特征值不可用', 'errline'); return false; }
+  let method = 'withResponse';
   try {
     try {
-      await writeChar.writeValueWithResponse(frame);
+      await char.writeValueWithResponse(frame);
     } catch (e1) {
-      await writeChar.writeValueWithoutResponse(frame);
+      method = 'withoutResponse';
+      await char.writeValueWithoutResponse(frame);
     }
-    log(`→ ${label}  ${hex(frame)}`, 'send');
+    log(`→ ${label}  ${hex(frame)}  (${method})`, 'send');
     return true;
   } catch (e) {
     log(`写入失败（${label}）：${e.message}`, 'errline');
@@ -233,44 +293,76 @@ function readKeySlot() {
   return { key, slot };
 }
 
+async function probe() {
+  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
+  const variants = [
+    { name: '明文 a1=0 a2=0 slot=0', ch: () => writeChar,    f: () => initFrame(0,0,0) },
+    { name: '明文 a1=0 a2=0 slot=1', ch: () => writeChar,    f: () => initFrame(0,0,1) },
+    { name: '明文 a1=1 a2=0 slot=1', ch: () => writeChar,    f: () => initFrame(1,0,1) },
+    { name: '明文 a1=0 a2=1 slot=1', ch: () => writeChar,    f: () => initFrame(0,1,1) },
+    { name: '明文 a1=1 a2=1 slot=1', ch: () => writeChar,    f: () => initFrame(1,1,1) },
+    { name: '加密 a1=0 a2=0 slot=1', ch: () => secWriteChar, f: () => initFrame(0,0,1) },
+  ];
+  log('=== 开始试探，每个变体 1.5 秒 ===');
+  for (const v of variants) {
+    if (!await ensureConnected()) { log('无法重连，中止', 'errline'); return; }
+    await sleep(400);
+    const ch = v.ch();
+    if (!ch) { log(`跳过 ${v.name}（特征值不存在）`, 'errline'); continue; }
+    const ok = await writeTo(ch, v.f(), 'INIT');
+    if (!ok) continue;
+    await sleep(1500);
+    if (device.gatt.connected) {
+      log(`✔ ${v.name} —— 连接保持住了`, 'recv');
+      log('这个变体被接受，用它继续配网', 'recv');
+      return;
+    }
+    log(`✘ ${v.name} —— 被断开`, 'errline');
+  }
+  log('=== 全部变体都被断开，需要换思路 ===', 'errline');
+}
+
 async function provision() {
   let key, slot;
   try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
+  if (!await ensureConnected()) return;
   log('开始配网…');
-  if (!await write(secureFrame(0x03, new Uint8Array(8), slot), 'INIT')) return;
-  await sleep(300);
-  if (!await write(secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
-  await sleep(300);
-  if (!await write(secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
-  await sleep(300);
-  if (!await write(commitFrame(key, slot), 'COMMIT')) return;
+  if (!await writeTo(writeChar, initFrame(0,0,slot), 'INIT')) return;
+  await sleep(400);
+  if (!await writeTo(writeChar, secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
+  await sleep(400);
+  if (!await writeTo(writeChar, secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
+  await sleep(400);
+  if (!await writeTo(writeChar, commitFrame(key, slot), 'COMMIT')) return;
   log('四帧已发完，等待锁的回应…', 'recv');
 }
 
 async function sendStep(step) {
   let key, slot;
   try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
+  if (!await ensureConnected()) return;
   const frames = {
-    init:   [secureFrame(0x03, new Uint8Array(8), slot), 'INIT'],
-    lower:  [secureFrame(0x11, key.subarray(0,8), 0), 'LOWER'],
-    upper:  [secureFrame(0x13, key.subarray(8,16), 0), 'UPPER'],
-    commit: [commitFrame(key, slot), 'COMMIT'],
+    init:   [writeChar, initFrame(0,0,slot), 'INIT'],
+    lower:  [writeChar, secureFrame(0x11, key.subarray(0,8), 0), 'LOWER'],
+    upper:  [writeChar, secureFrame(0x13, key.subarray(8,16), 0), 'UPPER'],
+    commit: [writeChar, commitFrame(key, slot), 'COMMIT'],
   };
-  const [f, label] = frames[step];
-  await write(f, label);
+  const [ch, f, label] = frames[step];
+  await writeTo(ch, f, label);
 }
 
 $('btnConnect').onclick = connect;
+$('btnProbe').onclick = probe;
 $('btnProv').onclick = provision;
-$('btnUnlock').onclick = () => write(plainFrame(0x0A), 'UNLOCK');
-$('btnLock').onclick = () => write(plainFrame(0x0B), 'LOCK');
-$('btnStatus').onclick = () => write(plainFrame(0x02), 'GETSTATUS');
+$('btnUnlock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0A), 'UNLOCK'); };
+$('btnLock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0B), 'LOCK'); };
+$('btnStatus').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x02), 'GETSTATUS'); };
 document.querySelectorAll('[data-step]').forEach(b => {
   b.onclick = () => sendStep(b.dataset.step);
 });
 
 if (!navigator.bluetooth) {
-  log('这个浏览器不支持 Web Bluetooth，请用 Android Chrome 或桌面 Chrome。', 'errline');
+  log('这个浏览器不支持 Web Bluetooth，请用 Android Chrome。', 'errline');
   $('btnConnect').disabled = true;
 }
 </script>
