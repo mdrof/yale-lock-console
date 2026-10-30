@@ -104,8 +104,10 @@
 <div class="card">
   <label>其他</label>
   <button id="btnEnum" class="ghost small">枚举 GATT</button>
-  <button id="btnHap" class="ghost small">读 HAP 状态</button>
+  <button id="btnHap" class="ghost small">读 HAP 状态（未配对会失败，属正常）</button>
   <button id="btnOta" class="ghost small">测 OTA 通道</button>
+  <button id="btnOtaState" class="ghost small">OTA GET_STATE (0x09，只读)</button>
+  <button id="btnProbe053" class="ghost small">0x53 探针（预览→单次，明文611）</button>
   <button id="btnHkReset" class="ghost small">HomeKit_Reset (0x2E)</button>
 </div>
 
@@ -132,6 +134,7 @@ const ENUM_SERVICES = [
   '00000055-0000-1000-8000-0026bb765291',
   '0000003e-0000-1000-8000-0026bb765291',
   '00000044-0000-1000-8000-0026bb765291',
+  '00000045-0000-1000-8000-0026bb765291',
   '0000004a-0000-1000-8000-0026bb765291',
   '000000a3-0000-1000-8000-0026bb765291'
 ];
@@ -257,7 +260,7 @@ async function connect() {
       });
       if (!listenerBound) {
         device.addEventListener('gattserverdisconnected', function(){
-          setConnected(false); log('连接已断开', 'errline');
+          setConnected(false); log('⛔ 断链（gattserverdisconnected）— 已停止，不自动重试', 'errline');
         });
         listenerBound = true;
       }
@@ -373,13 +376,18 @@ async function enumerateAll() {
 
 async function readHap() {
   if (!await ensureConnected()) return;
+  log('HAP 只读诊断：0xA6 是 Paired Read，本页未配对，读取失败属正常，不代表 bit0=1', 'errline');
   const list = [
-    ['0000003e-0000-1000-8000-0026bb765291','00000020-0000-1000-8000-0026bb765291','HAP 版本'],
-    ['0000003e-0000-1000-8000-0026bb765291','00000052-0000-1000-8000-0026bb765291','Accessory Flags'],
-    ['00000055-0000-1000-8000-0026bb765291','0000004f-0000-1000-8000-0026bb765291','Pairing Features'],
-    ['00000055-0000-1000-8000-0026bb765291','00000050-0000-1000-8000-0026bb765291','Pairings'],
+    ['0000003e-0000-1000-8000-0026bb765291','00000020-0000-1000-8000-0026bb765291','HAP 版本(0x20)'],
+    ['0000003e-0000-1000-8000-0026bb765291','000000a6-0000-1000-8000-0026bb765291','Accessory Flags(0xA6)'],
+    ['00000055-0000-1000-8000-0026bb765291','0000004f-0000-1000-8000-0026bb765291','Pairing Features(0x4F)'],
+    ['00000055-0000-1000-8000-0026bb765291','00000050-0000-1000-8000-0026bb765291','Pairings(0x50)'],
     ['00000055-0000-1000-8000-0026bb765291','e604e95d-a759-4817-87d3-aa005083a0d1','未知@55'],
-    ['00000044-0000-1000-8000-0026bb765291','00000019-0000-1000-8000-0026bb765291','Lock Control Point']
+    ['00000044-0000-1000-8000-0026bb765291','00000019-0000-1000-8000-0026bb765291','Lock Control Point(0x19)'],
+    ['00000045-0000-1000-8000-0026bb765291','0000001d-0000-1000-8000-0026bb765291','Lock Current State(0x1D)'],
+    ['00000045-0000-1000-8000-0026bb765291','0000001e-0000-1000-8000-0026bb765291','Lock Target State(0x1E, 0=解锁/1=上锁)'],
+    ['00000045-0000-1000-8000-0026bb765291','00000077-0000-1000-8000-0026bb765291','Status Fault(0x77)'],
+    ['00000045-0000-1000-8000-0026bb765291','00000075-0000-1000-8000-0026bb765291','Status Active(0x75)']
   ];
   for (let i=0;i<list.length;i++) {
     const su = list[i][0], cu = list[i][1], name = list[i][2];
@@ -387,10 +395,18 @@ async function readHap() {
       const s = await device.gatt.getPrimaryService(su);
       const c = await s.getCharacteristic(cu);
       const v = await c.readValue();
-      log(name + ': ' + hex(new Uint8Array(v.buffer)), 'recv');
-    } catch (e) { log(name + ': 读取失败', 'errline'); }
+      const h = hex(new Uint8Array(v.buffer));
+      let note = '';
+      if (name.indexOf('0xA6') >= 0) {
+        note = '  (uint32, Paired Read；未配对读到的值不可信，需 HAP 会话)';
+      }
+      log(name + ': ' + h + note, 'recv');
+    } catch (e) {
+      log(name + ': 读取失败（' + (e.name||'Error') + ': ' + (e.message||e) + '）', 'errline');
+    }
   }
 }
+
 
 async function readDis() {
   if (!await ensureConnected()) return null;
@@ -434,6 +450,7 @@ async function readDis() {
         text = dec.decode(new Uint8Array(v.buffer)).replace(/\0+$/,'').trim();
       } catch (e) {
         lastErr = (e && e.name ? e.name : 'Error') + ': ' + (e && e.message ? e.message : e);
+        if (/blocklist/i.test(lastErr)) lastErr += ' → Chrome 屏蔽该 UUID，请用 nRF Connect 原生读取';
         if (attempt < tries) await sleep(300);
       }
     }
@@ -465,7 +482,8 @@ async function readDis() {
   } else {
     rows.push('<b style="color:#ff5c5c">0x2A25 读不到序列号</b>');
     rows.push('BLE 名：' + (device.name || '(无)') + '　标签：' + LABEL_SERIAL);
-    log('0x2A25 读不到；BLE 名=' + (device.name||'(无)') + '，标签=' + LABEL_SERIAL + '（原厂 App 读失败也用 "unknown" 兜底）', 'errline');
+    rows.push('Chrome 屏蔽 0x2A25，需用 nRF Connect 原生读取');
+    log('0x2A25 读不到；BLE 名=' + (device.name||'(无)') + '，标签=' + LABEL_SERIAL + '（Chrome 屏蔽该 UUID；原厂 App 读失败也用 "unknown" 兜底）', 'errline');
   }
   const box = $('disResult');
   if (box) box.innerHTML = rows.map(function(r){ return '<div>' + r + '</div>'; }).join('');
@@ -481,6 +499,51 @@ async function testOta() {
   await sleep(1500);
   log(device.gatt.connected ? '✔ OTA 后连接保持' : '✘ OTA 后断链',
       device.gatt.connected ? 'recv' : 'errline');
+}
+
+async function otaGetState() {
+  if (!await ensureConnected()) return;
+  if (!otaCmdChar) { log('OTA 特征值不可用', 'errline'); return; }
+  try {
+    await otaCmdChar.writeValueWithoutResponse(new Uint8Array([9]));
+    log('→ [OTA] GET_STATE (0x09) — 只读基线', 'send');
+  } catch (e) {
+    log('OTA GET_STATE 写入失败（' + (e.name||'Error') + ': ' + (e.message||e) + '）', 'errline');
+    return;
+  }
+  await sleep(1200);
+  log(device.gatt.connected ? '✔ OTA GET_STATE 后连接保持（看上方回包）' : '✘ OTA GET_STATE 后断链',
+      device.gatt.connected ? 'recv' : 'errline');
+}
+
+async function probe053() {
+  if (!await ensureConnected()) return;
+  const f = secFrame(0x53, 0, 0, 1);
+  const ok = confirm(
+    '将向【明文通道 611】发送一次 0x53 (GET_BOND_COUNT) 探针：\n\n' +
+    hex(f) + '\n\n' +
+    '规则：只发一次；断链即停，不自动重试；只读，不写。\n继续？'
+  );
+  if (!ok) { log('已取消 0x53 探针', 'errline'); return; }
+  $('btnProbe053').disabled = true;
+  lastNotify = null;
+  try {
+    await writeChar.writeValueWithResponse(f);
+    log('→ [611] 0x53 TX: ' + hex(f), 'send');
+  } catch (e) {
+    log('0x53 写入失败（' + (e.name||'Error') + ': ' + (e.message||e) + '）', 'errline');
+    $('btnProbe053').disabled = false;
+    return;
+  }
+  await sleep(1500);
+  if (!device.gatt.connected) {
+    log('⛔ 断链：明文通道不接受 0x53。已停止，不重试。', 'errline');
+  } else if (lastNotify) {
+    log('← 0x53 响应: ' + lastNotify + '（命令被处理，需解析响应码）', 'recv');
+  } else {
+    log('0x53 无响应（连接保持）— 排查帧格式/通知订阅/通道选择', 'errline');
+  }
+  $('btnProbe053').disabled = false;
 }
 
 async function copyLog() {
@@ -501,6 +564,8 @@ $('btnCopyLog').onclick = copyLog;
 $('btnEnum').onclick = enumerateAll;
 $('btnHap').onclick = readHap;
 $('btnOta').onclick = testOta;
+$('btnOtaState').onclick = otaGetState;
+$('btnProbe053').onclick = probe053;
 $('btnDis').onclick = readDis;
 
 $('btnHs').onclick = async function() {
