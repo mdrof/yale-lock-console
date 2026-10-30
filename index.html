@@ -67,6 +67,7 @@
   <button id="btnTestStatus" class="ghost">试发 GETSTATUS</button>
   <button id="btnTestLength" class="ghost">帧长测试（16/18/20）</button>
   <button id="btnEnum" class="ghost">枚举 GATT 全部服务</button>
+  <button id="btnHap" class="ghost">读取 HAP 状态</button>
   <div class="hint">
     <b>读取</b>：看锁是否预置了挑战数据。<br>
     <b>GETSTATUS</b>：最无害的命令，只判断链路通不通——如果它也让连接断开，说明认证前任何命令都被拒。
@@ -130,8 +131,11 @@
 </div>
 
 <div class="card">
-  <label>日志</label>
-  <div id="log"></div>
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <label style="margin:0">日志</label>
+    <button id="btnCopyLog" class="ghost small" style="width:auto;margin:0;padding:6px 14px;font-size:12px">复制</button>
+  </div>
+  <div id="log" style="margin-top:10px"></div>
 </div>
 
 <script>
@@ -441,6 +445,38 @@ async function enumerateAll() {
   }
 }
 
+
+// —— 读取 HAP 关键特征值（配对前可读的） ——
+const HAP_READS = [
+  ['0000003e-0000-1000-8000-0026bb765291', '00000020-0000-1000-8000-0026bb765291', 'HAP 协议版本'],
+  ['0000003e-0000-1000-8000-0026bb765291', '00000052-0000-1000-8000-0026bb765291', 'Accessory Flags'],
+  ['00000055-0000-1000-8000-0026bb765291', '0000004f-0000-1000-8000-0026bb765291', 'Pairing Features'],
+  ['00000055-0000-1000-8000-0026bb765291', '00000050-0000-1000-8000-0026bb765291', 'Pairings'],
+  ['00000055-0000-1000-8000-0026bb765291', 'e604e95d-a759-4817-87d3-aa005083a0d1', '未知特征值@55'],
+  ['0000003e-0000-1000-8000-0026bb765291', 'e604e95d-a759-4817-87d3-aa005083a0d1', '未知特征值@3E'],
+  ['00000044-0000-1000-8000-0026bb765291', '00000019-0000-1000-8000-0026bb765291', 'Lock Control Point'],
+  ['00000044-0000-1000-8000-0026bb765291', '00000037-0000-1000-8000-0026bb765291', 'Lock Mgmt 0x37'],
+];
+
+async function readHap() {
+  if (!device) { log('请先连接一次', 'errline'); return; }
+  if (!device.gatt.connected) {
+    try { await device.gatt.connect(); } catch (e) { log('连接失败：' + e.message, 'errline'); return; }
+  }
+  log('=== 读取 HAP 状态 ===');
+  for (const [su, cu, name] of HAP_READS) {
+    try {
+      const svc = await device.gatt.getPrimaryService(su);
+      const ch = await svc.getCharacteristic(cu);
+      const v = await ch.readValue();
+      log(`${name}: ${hex(new Uint8Array(v.buffer))}`, 'recv');
+    } catch (e) {
+      log(`${name}: 读取失败（${e.message.slice(0, 60)}）`, 'errline');
+    }
+  }
+  log('=== 结束 ===');
+}
+
 async function probe() {
   if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
   const variants = [
@@ -530,6 +566,7 @@ $('btnReadAll').onclick = readAll;
 $('btnTestStatus').onclick = testStatus;
 $('btnTestLength').onclick = testLength;
 $('btnEnum').onclick = enumerateAll;
+$('btnHap').onclick = readHap;
 $('btnSendPlain').onclick = async () => {
   try {
     const f = fromHex($('customFrame').value);
@@ -551,6 +588,34 @@ $('btnStatus').onclick = async () => { if (await ensureConnected()) writeTo(writ
 document.querySelectorAll('[data-step]').forEach(b => {
   b.onclick = () => sendStep(b.dataset.step);
 });
+
+// —— 一键复制日志 ——
+async function copyLog() {
+  const lines = Array.from(logEl.children).map(d => d.textContent.trim());
+  const text = lines.join('\n');
+  if (!text) { log('日志为空', 'errline'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    log(`已复制 ${lines.length} 行日志`, 'recv');
+  } catch (e) {
+    // 兼容：clipboard API 不可用时用 execCommand
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      log(`已复制 ${lines.length} 行日志`, 'recv');
+    } catch (e2) {
+      log('复制失败：' + e2.message, 'errline');
+    }
+  }
+}
+
+$('btnCopyLog').onclick = copyLog;
 
 if (!navigator.bluetooth) {
   log('这个浏览器不支持 Web Bluetooth，请用 Android Chrome。', 'errline');
