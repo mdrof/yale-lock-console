@@ -65,6 +65,8 @@
   <label>安全测试（先跑这两个）</label>
   <button id="btnReadAll" class="ghost">读取四个特征值</button>
   <button id="btnTestStatus" class="ghost">试发 GETSTATUS</button>
+  <button id="btnTestLength" class="ghost">帧长测试（16/18/20）</button>
+  <button id="btnEnum" class="ghost">枚举 GATT 全部服务</button>
   <div class="hint">
     <b>读取</b>：看锁是否预置了挑战数据。<br>
     <b>GETSTATUS</b>：最无害的命令，只判断链路通不通——如果它也让连接断开，说明认证前任何命令都被拒。
@@ -115,6 +117,19 @@
 </div>
 
 <div class="card">
+  <label>自定义帧（十六进制）</label>
+  <input id="customFrame" value="41 00 00 00 00 00 00 00 00 00 00 00 BF FF FF FF 0F 00" spellcheck="false">
+  <div class="grid2" style="margin-top:10px">
+    <button id="btnSendPlain" class="ghost small">发到明文 611</button>
+    <button id="btnSendSec" class="ghost small">发到加密 613</button>
+  </div>
+  <div class="hint">
+    默认值是 <code>SEC_GET_FLASH_PAGE_DATA</code>（0x41）测试帧。<br>
+    发完看日志：有 <code>←</code> 就是锁回应了，出现「连接已断开」就是被拒。
+  </div>
+</div>
+
+<div class="card">
   <label>日志</label>
   <div id="log"></div>
 </div>
@@ -125,6 +140,22 @@ const CHAR_WRITE = 'bd4ac611-0b45-11e3-8ffd-0800200c9a66';
 const CHAR_READ  = 'bd4ac612-0b45-11e3-8ffd-0800200c9a66';
 const CHAR_SEC_WRITE = 'bd4ac613-0b45-11e3-8ffd-0800200c9a66';
 const CHAR_SEC_READ  = 'bd4ac614-0b45-11e3-8ffd-0800200c9a66';
+const CHAR_OTA_CMD   = 'bd4ac615-0b45-11e3-8ffd-0800200c9a66';
+const CHAR_OTA_DATA  = 'bd4ac616-0b45-11e3-8ffd-0800200c9a66';
+
+// 枚举用：所有想探测的服务（含 HAP、标准 GATT）
+const ENUM_SERVICES = [
+  '0000fe24-0000-1000-8000-00805f9b34fb',   // August 主服务
+  '00001800-0000-1000-8000-00805f9b34fb',   // Generic Access
+  '00001801-0000-1000-8000-00805f9b34fb',   // Generic Attribute
+  '0000180a-0000-1000-8000-00805f9b34fb',   // Device Information
+  '0000180f-0000-1000-8000-00805f9b34fb',   // Battery
+  '00000055-0000-1000-8000-0026bb765291',   // HAP Pairing
+  '0000003e-0000-1000-8000-0026bb765291',   // HAP Protocol Information
+  '00000044-0000-1000-8000-0026bb765291',   // HAP Lock Management
+  '0000004a-0000-1000-8000-0026bb765291',   // HAP Lock Mechanism
+  '000000a3-0000-1000-8000-0026bb765291',   // HAP Accessory Information
+];
 
 let device = null;
 let writeChar = null, notifyChar = null, secWriteChar = null, secNotifyChar = null;
@@ -202,9 +233,16 @@ function setClientAddrFrame(arg1, mac) {
   const f = plainFrame(0x7D);
   f[4] = arg1 & 0xFF;
   f.set(mac.subarray(0, 6), 5);
+  f[3] = 0;                       // 先把校验位清零，避免重复计入
   let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
   f[3] = (0 - sum) & 0xFF;
   return f;
+}
+// 把 18 字节帧补到指定长度（用于测试锁期待的包长）
+function padFrame(frame, len) {
+  const out = new Uint8Array(len);
+  out.set(frame.subarray(0, Math.min(len, frame.length)), 0);
+  return out;
 }
 
 function setConnected(on, name='') {
@@ -272,7 +310,7 @@ async function connect() {
     if (!device) {
       device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: [SERVICE]
+        optionalServices: ENUM_SERVICES
       });
       bindDisconnect();
       log(`选中：${device.name || '(无名)'}`);
@@ -342,6 +380,64 @@ async function testStatus() {
     log('✔ 连接保持住了 —— 链路可用，问题在具体命令', 'recv');
   } else {
     log('✘ 连接被断开 —— 认证前任何命令都被拒', 'errline');
+  }
+}
+
+// 帧长测试：同一帧补到 16 / 18 / 20 字节，看锁接受哪种长度
+async function testLength() {
+  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
+  log('=== 帧长测试 ===');
+  for (const len of [16, 18, 20]) {
+    if (!await ensureConnected()) { log('无法重连，中止', 'errline'); return; }
+    await sleep(400);
+    const frame = padFrame(plainFrame(0x02), len);
+    await writeTo(writeChar, frame, `GETSTATUS/${len}B`);
+    await sleep(1500);
+    if (device.gatt.connected) {
+      log(`✔ ${len} 字节 —— 连接保持住了`, 'recv');
+      return;
+    }
+    log(`✘ ${len} 字节 —— 被断开`, 'errline');
+  }
+  log('=== 三种长度都被断开 ===', 'errline');
+}
+
+// —— 枚举全部 GATT 服务与特征值 ——
+async function enumerateAll() {
+  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
+  if (!device.gatt.connected) {
+    try { await device.gatt.connect(); } catch (e) { log('连接失败：' + e.message, 'errline'); return; }
+  }
+  log('=== 开始枚举 GATT ===');
+  let found = 0;
+  for (const uuid of ENUM_SERVICES) {
+    let svc = null;
+    try {
+      svc = await device.gatt.getPrimaryService(uuid);
+    } catch (e) {
+      continue;   // 该服务不存在
+    }
+    found++;
+    log(`■ 服务 ${uuid}`, 'recv');
+    try {
+      const chars = await svc.getCharacteristics();
+      for (const c of chars) {
+        let props = [];
+        if (c.properties.read) props.push('read');
+        if (c.properties.write) props.push('write');
+        if (c.properties.writeWithoutResponse) props.push('writeNR');
+        if (c.properties.notify) props.push('notify');
+        if (c.properties.indicate) props.push('indicate');
+        log(`    └ ${c.uuid}  [${props.join(',') || '无属性'}]`);
+      }
+    } catch (e) {
+      log(`    └ 特征值读取失败：${e.message}`, 'errline');
+    }
+  }
+  if (found === 0) {
+    log('没有发现任何已列出的服务（可能全部未暴露，或需要先配对）', 'errline');
+  } else {
+    log(`=== 枚举结束，命中 ${found} 个服务 ===`, 'recv');
   }
 }
 
@@ -432,6 +528,20 @@ async function sendStep(step) {
 $('btnConnect').onclick = connect;
 $('btnReadAll').onclick = readAll;
 $('btnTestStatus').onclick = testStatus;
+$('btnTestLength').onclick = testLength;
+$('btnEnum').onclick = enumerateAll;
+$('btnSendPlain').onclick = async () => {
+  try {
+    const f = fromHex($('customFrame').value);
+    if (await ensureConnected()) writeTo(writeChar, f, '自定义/明文');
+  } catch (e) { log(e.message, 'errline'); }
+};
+$('btnSendSec').onclick = async () => {
+  try {
+    const f = fromHex($('customFrame').value);
+    if (await ensureConnected()) writeTo(secWriteChar || writeChar, f, '自定义/加密');
+  } catch (e) { log(e.message, 'errline'); }
+};
 $('btnProbe').onclick = probe;
 $('btnProv').onclick = provision;
 $('btnProv2').onclick = provV2;
