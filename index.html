@@ -3,34 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Yale YMH70A 控制台</title>
+<title>Yale YMH70A 诊断台</title>
 <style>
   :root{
     --bg:#0f1115; --card:#171a21; --line:#252a34; --text:#e6e9ef;
     --muted:#8b93a1; --accent:#4f9dff; --ok:#3ddc84; --err:#ff5c5c;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  body{
-    margin:0;background:var(--bg);color:var(--text);
-    font:15px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
-    padding:16px 14px 40px;max-width:560px;margin:0 auto;
-  }
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+    padding:16px 14px 40px;max-width:560px;margin:0 auto}
   h1{font-size:18px;margin:4px 0 2px;font-weight:600}
-  .sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
-  .row{display:flex;gap:10px;align-items:center}
   label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
-  input{
-    width:100%;background:#0c0e12;border:1px solid var(--line);border-radius:10px;
-    color:var(--text);padding:11px 12px;font:13px/1.4 ui-monospace,Menlo,monospace;
-  }
-  button{
-    appearance:none;border:none;border-radius:12px;padding:14px 16px;font-size:15px;
-    font-weight:600;color:#0b0d11;background:var(--accent);width:100%;
-    margin-top:10px;transition:opacity .15s;
-  }
-  button:active{opacity:.7}
-  button:disabled{opacity:.35}
+  input{width:100%;background:#0c0e12;border:1px solid var(--line);border-radius:10px;
+    color:var(--text);padding:11px 12px;font:13px/1.4 ui-monospace,Menlo,monospace}
+  button{appearance:none;border:none;border-radius:12px;padding:14px 16px;font-size:15px;
+    font-weight:600;color:#0b0d11;background:var(--accent);width:100%;margin-top:10px}
+  button:active{opacity:.7} button:disabled{opacity:.35}
   button.ghost{background:#232936;color:var(--text)}
   button.small{padding:11px;font-size:13px;margin-top:8px}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -38,23 +29,25 @@
   .status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
   .dot{width:8px;height:8px;border-radius:50%;background:#4a5160}
   .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
-  #log{
-    font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;
-    max-height:320px;overflow:auto;margin:0;color:#b9c2d0;
-  }
+  #log{font:12px/1.55 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;
+    max-height:340px;overflow:auto;margin:0;color:#b9c2d0}
   .logline{padding:3px 0;border-bottom:1px solid #1d222b}
   .t{color:#5d6675;margin-right:6px}
-  .send{color:var(--accent)}
-  .recv{color:var(--ok)}
-  .errline{color:var(--err)}
+  .send{color:var(--accent)} .recv{color:var(--ok)} .errline{color:var(--err)}
   .hint{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6}
   code{background:#0c0e12;padding:1px 5px;border-radius:5px;font-size:12px}
+  details{margin-top:12px}
+  summary{cursor:pointer;color:var(--muted);font-size:13px;padding:6px 0}
+  .row{display:flex;gap:10px;align-items:center}
+  .res{font:12px/1.7 ui-monospace,Menlo,monospace;margin-top:10px}
+  .res div{padding:5px 9px;border-radius:6px;margin-bottom:5px;background:#0c0e12}
+  .hit{background:#12301f !important;color:var(--ok)}
 </style>
 </head>
 <body>
 
-<h1>Yale YMH70A 控制台</h1>
-<div class="sub">Web Bluetooth · 本地直连 · 不经过任何云端</div>
+<h1>Yale YMH70A 诊断台</h1>
+<div class="sub">Web Bluetooth · 本地直连</div>
 
 <div class="card">
   <div class="status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
@@ -62,609 +55,370 @@
 </div>
 
 <div class="card">
-  <label>安全测试（先跑这两个）</label>
-  <button id="btnReadAll" class="ghost">读取四个特征值</button>
-  <button id="btnTestStatus" class="ghost">试发 GETSTATUS</button>
-  <button id="btnTestLength" class="ghost">帧长测试（16/18/20）</button>
-  <button id="btnEnum" class="ghost">枚举 GATT 全部服务</button>
-  <button id="btnHap" class="ghost">读取 HAP 状态</button>
-  <button id="btnOta" class="ghost">测 OTA 通道（0x14 查询）</button>
+  <label>一键检测</label>
+  <button id="btnAuto">开始自动检测</button>
   <div class="hint">
-    <b>读取</b>：看锁是否预置了挑战数据。<br>
-    <b>GETSTATUS</b>：最无害的命令，只判断链路通不通——如果它也让连接断开，说明认证前任何命令都被拒。
+    自动完成：枚举服务 → 读 HAP 标识 → 逐个尝试 5 个候选密钥做加密握手 → 汇总
   </div>
+  <div class="res" id="result"></div>
 </div>
 
 <div class="card">
-  <label>自动试探（先跑这个）</label>
-  <button id="btnProbe">试探 INIT 变体</button>
-  <button id="btnProv2" class="ghost">配网 v2（先设客户端地址）</button>
-  <div class="hint">
-    连上锁 → 面板按 <code>M → R → 7</code> 听到「登记蓝牙」→ 点这里。<br>
-    v2 会先发 <code>0x7D SetClientBLEAddress</code>，再走 INIT / 写密钥 / 提交。
-  </div>
-</div>
-
-<div class="card">
-  <label>密钥（32 位十六进制）</label>
-  <input id="key" value="00112233445566778899AABBCCDDEEFF" spellcheck="false">
-  <div class="row" style="margin-top:10px">
-    <div style="flex:1">
-      <label>槽位</label>
-      <input id="slot" value="1" inputmode="numeric">
-    </div>
-  </div>
-  <button id="btnProv" class="ghost">一键配网（写入密钥）</button>
-</div>
-
-<div class="card">
-  <label>控制</label>
-  <div class="grid2">
-    <button id="btnUnlock" class="ghost small">开锁</button>
-    <button id="btnLock" class="ghost small">上锁</button>
-  </div>
-  <button id="btnStatus" class="ghost small">读取状态</button>
-</div>
-
-<div class="card">
-  <label>单步（调试用）</label>
-  <div class="grid2">
-    <button data-step="init" class="ghost small">INIT</button>
-    <button data-step="lower" class="ghost small">写下半</button>
-  </div>
-  <div class="grid2" style="margin-top:10px">
-    <button data-step="upper" class="ghost small">写上半</button>
-    <button data-step="commit" class="ghost small">提交</button>
-  </div>
-</div>
-
-<div class="card">
-  <label>自定义帧（十六进制）</label>
-  <input id="customFrame" value="41 00 00 00 00 00 00 00 00 00 00 00 BF FF FF FF 0F 00" spellcheck="false">
-  <div class="grid2" style="margin-top:10px">
-    <button id="btnSendPlain" class="ghost small">发到明文 611</button>
-    <button id="btnSendSec" class="ghost small">发到加密 613</button>
-  </div>
-  <button id="btnHkReset" class="ghost small">发送 HomeKit_Reset (0x2E)</button>
-  <div class="hint">
-    默认值是 <code>SEC_GET_FLASH_PAGE_DATA</code>（0x41）测试帧。<br>
-    发完看日志：有 <code>←</code> 就是锁回应了，出现「连接已断开」就是被拒。
-  </div>
-</div>
-
-<div class="card">
-  <div class="row" style="justify-content:space-between;align-items:center">
+  <div class="row" style="justify-content:space-between">
     <label style="margin:0">日志</label>
     <button id="btnCopyLog" class="ghost small" style="width:auto;margin:0;padding:6px 14px;font-size:12px">复制</button>
   </div>
   <div id="log" style="margin-top:10px"></div>
 </div>
 
-<script>
-const SERVICE = '0000fe24-0000-1000-8000-00805f9b34fb';
-const CHAR_WRITE = 'bd4ac611-0b45-11e3-8ffd-0800200c9a66';
-const CHAR_READ  = 'bd4ac612-0b45-11e3-8ffd-0800200c9a66';
-const CHAR_SEC_WRITE = 'bd4ac613-0b45-11e3-8ffd-0800200c9a66';
-const CHAR_SEC_READ  = 'bd4ac614-0b45-11e3-8ffd-0800200c9a66';
-const CHAR_OTA_CMD   = 'bd4ac615-0b45-11e3-8ffd-0800200c9a66';
-const CHAR_OTA_DATA  = 'bd4ac616-0b45-11e3-8ffd-0800200c9a66';
+<details>
+<summary>手动工具（点开）</summary>
 
-// 枚举用：所有想探测的服务（含 HAP、标准 GATT）
+<div class="card" style="margin-top:10px">
+  <label>单个密钥握手试探</label>
+  <input id="hsKey" value="00000000000000000000000000000000" spellcheck="false">
+  <div class="row" style="margin-top:10px">
+    <div style="flex:1"><label>槽位</label><input id="hsSlot" value="1" inputmode="numeric"></div>
+  </div>
+  <button id="btnHs" class="ghost small">发送 SendMobileKey</button>
+</div>
+
+<div class="card">
+  <label>自定义帧（十六进制）</label>
+  <input id="customFrame" value="41 00 00 00 00 00 00 00 00 00 00 00 BF FF FF FF 0F 00" spellcheck="false">
+  <div class="grid2" style="margin-top:10px">
+    <button id="btnSendPlain" class="ghost small">发到 611</button>
+    <button id="btnSendSec" class="ghost small">发到 613</button>
+  </div>
+</div>
+
+<div class="card">
+  <label>其他</label>
+  <button id="btnEnum" class="ghost small">枚举 GATT</button>
+  <button id="btnHap" class="ghost small">读 HAP 状态</button>
+  <button id="btnOta" class="ghost small">测 OTA 通道</button>
+  <button id="btnHkReset" class="ghost small">HomeKit_Reset (0x2E)</button>
+</div>
+
+</details>
+
+<script>
+const SVC_AUGUST = '0000fe24-0000-1000-8000-00805f9b34fb';
+const C_WRITE = 'bd4ac611-0b45-11e3-8ffd-0800200c9a66';
+const C_READ  = 'bd4ac612-0b45-11e3-8ffd-0800200c9a66';
+const C_SEC_W = 'bd4ac613-0b45-11e3-8ffd-0800200c9a66';
+const C_SEC_R = 'bd4ac614-0b45-11e3-8ffd-0800200c9a66';
+const C_OTA_C = 'bd4ac615-0b45-11e3-8ffd-0800200c9a66';
+const C_OTA_D = 'bd4ac616-0b45-11e3-8ffd-0800200c9a66';
+
 const ENUM_SERVICES = [
-  '0000fe24-0000-1000-8000-00805f9b34fb',   // August 主服务
-  '00001800-0000-1000-8000-00805f9b34fb',   // Generic Access
-  '00001801-0000-1000-8000-00805f9b34fb',   // Generic Attribute
-  '0000180a-0000-1000-8000-00805f9b34fb',   // Device Information
-  '0000180f-0000-1000-8000-00805f9b34fb',   // Battery
-  '00000055-0000-1000-8000-0026bb765291',   // HAP Pairing
-  '0000003e-0000-1000-8000-0026bb765291',   // HAP Protocol Information
-  '00000044-0000-1000-8000-0026bb765291',   // HAP Lock Management
-  '0000004a-0000-1000-8000-0026bb765291',   // HAP Lock Mechanism
-  '000000a3-0000-1000-8000-0026bb765291',   // HAP Accessory Information
+  SVC_AUGUST,
+  '00001800-0000-1000-8000-00805f9b34fb',
+  '00001801-0000-1000-8000-00805f9b34fb',
+  '0000180a-0000-1000-8000-00805f9b34fb',
+  '0000180f-0000-1000-8000-00805f9b34fb',
+  '00000055-0000-1000-8000-0026bb765291',
+  '0000003e-0000-1000-8000-0026bb765291',
+  '00000044-0000-1000-8000-0026bb765291',
+  '0000004a-0000-1000-8000-0026bb765291',
+  '000000a3-0000-1000-8000-0026bb765291'
+];
+
+const CANDIDATES = [
+  ['全零',         '00000000000000000000000000000000'],
+  ['全 FF',        'ffffffffffffffffffffffffffffffff'],
+  ['配对码 ASCII',  '32333230363236340000000000000000'],
+  ['8 个 0 ASCII',  '30303030303030300000000000000000'],
+  ['测试密钥',      '00112233445566778899aabbccddeeff']
 ];
 
 let device = null;
 let writeChar = null, notifyChar = null, secWriteChar = null, secNotifyChar = null;
-let otaCmdChar = null, otaDataChar = null;
+let otaCmdChar = null;
 let listenerBound = false;
+let lastNotify = null;
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
 
-function log(text, cls='') {
+function log(text, cls) {
   const t = new Date().toLocaleTimeString('zh-CN', {hour12:false});
-  const div = document.createElement('div');
-  div.className = 'logline';
-  div.innerHTML = `<span class="t">${t}</span><span class="${cls}">${text}</span>`;
-  logEl.appendChild(div);
+  const d = document.createElement('div');
+  d.className = 'logline';
+  d.innerHTML = '<span class="t">' + t + '</span><span class="' + (cls||'') + '">' + text + '</span>';
+  logEl.appendChild(d);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
 const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
 const fromHex = s => {
-  const clean = s.replace(/[^0-9a-fA-F]/g,'');
-  if (clean.length % 2) throw new Error('十六进制长度必须是偶数');
-  const out = new Uint8Array(clean.length/2);
-  for (let i=0;i<out.length;i++) out[i] = parseInt(clean.substr(i*2,2),16);
-  return out;
+  const c = s.replace(/[^0-9a-fA-F]/g,'');
+  if (c.length % 2) throw new Error('hex 长度必须是偶数');
+  const o = new Uint8Array(c.length/2);
+  for (let i=0;i<o.length;i++) o[i] = parseInt(c.substr(i*2,2),16);
+  return o;
 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const rand32 = () => Math.floor(Math.random()*0x100000000) >>> 0;
 
-function u32le(v) {
-  const b = new Uint8Array(4);
-  new DataView(b.buffer).setUint32(0, v >>> 0, true);
-  return b;
-}
-function secChecksum(f) {
+function secFrame(op, w1, w2, slot) {
+  const f = new Uint8Array(18);
   const dv = new DataView(f.buffer);
-  const s = (dv.getUint32(0,true) + dv.getUint32(4,true) + dv.getUint32(8,true)) >>> 0;
-  return ((~s) + 1) >>> 0;
+  dv.setUint32(0, op>>>0, true);
+  dv.setUint32(4, w1>>>0, true);
+  dv.setUint32(8, w2>>>0, true);
+  const s = (dv.getUint32(0,true)+dv.getUint32(4,true)+dv.getUint32(8,true))>>>0;
+  dv.setUint32(12, ((~s)+1)>>>0, true);
+  f[16] = 0x0F; f[17] = slot & 0xFF;
+  return f;
 }
-function secureFrame(type, payload, slot) {
+function plainFrame(op) {
   const f = new Uint8Array(18);
-  f.set(u32le(type), 0);
-  f.set(payload.subarray(0,8), 4);
-  f.set(u32le(secChecksum(f)), 12);
-  f[16] = 0x0F;
-  f[17] = slot & 0xFF;
+  f[0]=0xEE; f[1]=op; f[16]=0x02;
+  let s=0; for(let i=0;i<18;i++) s=(s+f[i])&0xFF;
+  f[3]=(0-s)&0xFF;
   return f;
 }
-function initFrame(a1, a2, slot) {
-  const p = new Uint8Array(8);
-  p.set(u32le(a1), 0);
-  p.set(u32le(a2), 4);
-  return secureFrame(0x03, p, slot);
-}
-function commitFrame(key, slot) {
-  const dv = new DataView(key.buffer, key.byteOffset, key.byteLength);
-  let s = 0;
-  for (let i=0;i<4;i++) s = (s + dv.getUint32(i*4,true)) >>> 0;
-  const f = new Uint8Array(18);
-  f.set(u32le(0x15), 0);
-  f.set(u32le(((~s)+1) >>> 0), 4);
-  f[8] = slot & 0xFF;
-  f[9] = (slot >> 8) & 0xFF;
-  f.set(u32le(secChecksum(f)), 12);
-  f[16] = 0x0F;
-  f[17] = 0x00;
-  return f;
-}
-function plainFrame(opcode, tail16=0x02) {
-  const f = new Uint8Array(18);
-  f[0] = 0xEE; f[1] = opcode; f[2] = 0; f[16] = tail16; f[17] = 0;
-  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
-  f[3] = (0 - sum) & 0xFF;
-  return f;
-}
-// 0x7D SetClientBLEAddress：明文帧，[4]=arg1，[5..10]=MAC
-function setClientAddrFrame(arg1, mac) {
-  const f = plainFrame(0x7D);
-  f[4] = arg1 & 0xFF;
-  f.set(mac.subarray(0, 6), 5);
-  f[3] = 0;                       // 先把校验位清零，避免重复计入
-  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
-  f[3] = (0 - sum) & 0xFF;
-  return f;
-}
-// 把 18 字节帧补到指定长度（用于测试锁期待的包长）
-function padFrame(frame, len) {
-  const out = new Uint8Array(len);
-  out.set(frame.subarray(0, Math.min(len, frame.length)), 0);
-  return out;
+async function aesEnc16(key, plain16) {
+  const k = await crypto.subtle.importKey('raw', key, {name:'AES-CBC'}, false, ['encrypt']);
+  const ct = await crypto.subtle.encrypt({name:'AES-CBC', iv:new Uint8Array(16)}, k, plain16);
+  return new Uint8Array(ct).slice(0,16);
 }
 
-function setConnected(on, name='') {
+function setConnected(on, name) {
   $('dot').classList.toggle('on', on);
-  $('statusText').textContent = on ? `已连接 ${name}` : '未连接';
+  $('statusText').textContent = on ? ('已连接 ' + (name||'')) : '未连接';
   $('btnConnect').textContent = on ? '断开' : '连接门锁';
 }
 
-function bindDisconnect() {
-  if (listenerBound) return;
-  device.addEventListener('gattserverdisconnected', () => {
-    setConnected(false);
-    log('连接已断开', 'errline');
-  });
-  listenerBound = true;
-}
-
 async function setupChars() {
-  const service = await device.gatt.getPrimaryService(SERVICE);
-  writeChar = await service.getCharacteristic(CHAR_WRITE);
-  notifyChar = await service.getCharacteristic(CHAR_READ);
+  const svc = await device.gatt.getPrimaryService(SVC_AUGUST);
+  writeChar = await svc.getCharacteristic(C_WRITE);
+  notifyChar = await svc.getCharacteristic(C_READ);
+  secWriteChar = await svc.getCharacteristic(C_SEC_W);
+  secNotifyChar = await svc.getCharacteristic(C_SEC_R);
+
+  await notifyChar.startNotifications();
+  notifyChar.addEventListener('characteristicvaluechanged', e => {
+    const h = hex(new Uint8Array(e.target.value.buffer));
+    lastNotify = h;
+    log('← [明文] ' + h, 'recv');
+  });
+  await secNotifyChar.startNotifications();
+  secNotifyChar.addEventListener('characteristicvaluechanged', e => {
+    const h = hex(new Uint8Array(e.target.value.buffer));
+    lastNotify = h;
+    log('← [加密] ' + h, 'recv');
+  });
   try {
-    secWriteChar = await service.getCharacteristic(CHAR_SEC_WRITE);
-    secNotifyChar = await service.getCharacteristic(CHAR_SEC_READ);
-  } catch (e) { secWriteChar = null; secNotifyChar = null; }
-  try {
-    await notifyChar.startNotifications();
-    notifyChar.addEventListener('characteristicvaluechanged', e => {
-      log(`← [明文] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
-    });
-  } catch (e) { /* ignore */ }
-  if (secNotifyChar) {
-    try {
-      await secNotifyChar.startNotifications();
-      secNotifyChar.addEventListener('characteristicvaluechanged', e => {
-        log(`← [加密] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
-      });
-    } catch (e) { /* ignore */ }
-  }
-  try {
-    otaCmdChar = await service.getCharacteristic(CHAR_OTA_CMD);
-    otaDataChar = await service.getCharacteristic(CHAR_OTA_DATA);
+    otaCmdChar = await svc.getCharacteristic(C_OTA_C);
     await otaCmdChar.startNotifications();
     otaCmdChar.addEventListener('characteristicvaluechanged', e => {
-      log(`← [OTA] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
+      log('← [OTA] ' + hex(new Uint8Array(e.target.value.buffer)), 'recv');
     });
-  } catch (e) { otaCmdChar = null; otaDataChar = null; }
+  } catch (e) { otaCmdChar = null; }
 }
 
 async function ensureConnected() {
   if (device && device.gatt.connected) return true;
-  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return false; }
+  if (!device) { log('请先点「连接门锁」', 'errline'); return false; }
   try {
     await device.gatt.connect();
     await setupChars();
     setConnected(true, device.name || '');
     return true;
-  } catch (e) {
-    log(`重连失败：${e.message}`, 'errline');
-    return false;
-  }
+  } catch (e) { log('重连失败：' + e.message, 'errline'); return false; }
 }
 
 async function connect() {
   if (device && device.gatt.connected) {
-    device.gatt.disconnect();
-    setConnected(false);
-    log('已断开');
-    return;
+    device.gatt.disconnect(); setConnected(false); log('已断开'); return;
   }
   try {
-    log('正在请求设备…');
     if (!device) {
+      log('正在请求设备…');
       device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: ENUM_SERVICES
+        acceptAllDevices: true, optionalServices: ENUM_SERVICES
       });
-      bindDisconnect();
-      log(`选中：${device.name || '(无名)'}`);
+      if (!listenerBound) {
+        device.addEventListener('gattserverdisconnected', function(){
+          setConnected(false); log('连接已断开', 'errline');
+        });
+        listenerBound = true;
+      }
+      log('选中：' + (device.name || '(无名)'));
     }
     await device.gatt.connect();
     await setupChars();
     setConnected(true, device.name || '');
     log('已连接并订阅通知', 'recv');
-  } catch (e) {
-    log(`连接失败：${e.message}`, 'errline');
-  }
+  } catch (e) { log('连接失败：' + e.message, 'errline'); }
 }
 
-async function writeTo(char, frame, label) {
-  if (!char) { log('目标特征值不可用', 'errline'); return false; }
-  let method = 'withResponse';
+async function tryKey(keyHex, slot) {
+  if (!await ensureConnected()) return { ok:false, why:'连接失败' };
+  let key;
+  try { key = fromHex(keyHex); } catch(e) { return { ok:false, why:'hex 错误' }; }
+  if (key.length !== 16) return { ok:false, why:'密钥长度错' };
+  lastNotify = null;
+  const frame = secFrame(0x01, rand32(), rand32(), slot);
+  const enc = await aesEnc16(key, frame.slice(0,16));
+  const pkt = new Uint8Array(18);
+  pkt.set(enc,0); pkt[16]=0x0F; pkt[17]=slot&0xFF;
+  try { await secWriteChar.writeValueWithResponse(pkt); }
+  catch (e) { return { ok:false, why:'写入失败' }; }
+  await sleep(1200);
+  if (lastNotify) return { ok:true, notify:lastNotify };
+  return { ok:false, why: device.gatt.connected ? '无响应' : '断链' };
+}
+
+async function autoTest() {
+  $('btnAuto').disabled = true;
+  const rows = [];
+  const add = function(k,v,hit){
+    rows.push('<div class="' + (hit?'hit':'') + '">' + k + '：' + v + '</div>');
+    $('result').innerHTML = rows.join('');
+  };
   try {
-    try {
-      await char.writeValueWithResponse(frame);
-    } catch (e1) {
-      method = 'withoutResponse';
-      await char.writeValueWithoutResponse(frame);
+    if (!await ensureConnected()) { add('连接','失败'); return; }
+    add('连接','成功');
+
+    const found = [];
+    for (const u of ENUM_SERVICES) {
+      try { await device.gatt.getPrimaryService(u); found.push(u.slice(0,8)); } catch(e){}
     }
-    log(`→ ${label}  ${hex(frame)}  (${method})`, 'send');
-    return true;
+    add('服务', found.join(' ') || '无');
+
+    try {
+      const s = await device.gatt.getPrimaryService('00000055-0000-1000-8000-0026bb765291');
+      const c = await s.getCharacteristic('e604e95d-a759-4817-87d3-aa005083a0d1');
+      const v = await c.readValue();
+      add('HAP 标识', hex(new Uint8Array(v.buffer)));
+    } catch (e) { add('HAP 标识','读不到'); }
+
+    let hit = null;
+    for (let i=0;i<CANDIDATES.length;i++) {
+      const name = CANDIDATES[i][0], keyHex = CANDIDATES[i][1];
+      const r = await tryKey(keyHex, 1);
+      if (r.ok) { add('密钥「'+name+'」', '★ 命中，响应=' + r.notify, true); hit = name; break; }
+      add('密钥「'+name+'」', r.why);
+    }
+    add('结论', hit ? ('密钥命中：' + hit) : '全部失败');
   } catch (e) {
-    log(`写入失败（${label}）：${e.message}`, 'errline');
-    return false;
+    add('异常', e.message);
+  } finally {
+    $('btnAuto').disabled = false;
   }
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function readKeySlot() {
-  const key = fromHex($('key').value);
-  if (key.length !== 16) throw new Error('密钥必须是 16 字节（32 位 hex）');
-  const slot = parseInt($('slot').value, 10) || 1;
-  return { key, slot };
-}
-
-// —— 安全测试：读特征值 + 发 GETSTATUS ——
-async function readAll() {
-  if (!await ensureConnected()) return;
-  const targets = [
-    ['明文读 bd4ac612', notifyChar],
-    ['加密读 bd4ac614', secNotifyChar],
-    ['明文写 bd4ac611', writeChar],
-    ['加密写 bd4ac613', secWriteChar],
-  ];
-  for (const [label, ch] of targets) {
-    if (!ch) { log(`${label}：不存在`, 'errline'); continue; }
-    try {
-      const v = await ch.readValue();
-      log(`${label}：${hex(new Uint8Array(v.buffer))}`, 'recv');
-    } catch (e) {
-      log(`${label}：读取失败（${e.message}）`, 'errline');
-    }
-  }
-}
-
-async function testStatus() {
-  if (!await ensureConnected()) return;
-  const ok = await writeTo(writeChar, plainFrame(0x02), 'GETSTATUS');
-  if (!ok) return;
-  await sleep(1500);
-  if (device.gatt.connected) {
-    log('✔ 连接保持住了 —— 链路可用，问题在具体命令', 'recv');
-  } else {
-    log('✘ 连接被断开 —— 认证前任何命令都被拒', 'errline');
-  }
-}
-
-// 帧长测试：同一帧补到 16 / 18 / 20 字节，看锁接受哪种长度
-async function testLength() {
-  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
-  log('=== 帧长测试 ===');
-  for (const len of [16, 18, 20]) {
-    if (!await ensureConnected()) { log('无法重连，中止', 'errline'); return; }
-    await sleep(400);
-    const frame = padFrame(plainFrame(0x02), len);
-    await writeTo(writeChar, frame, `GETSTATUS/${len}B`);
-    await sleep(1500);
-    if (device.gatt.connected) {
-      log(`✔ ${len} 字节 —— 连接保持住了`, 'recv');
-      return;
-    }
-    log(`✘ ${len} 字节 —— 被断开`, 'errline');
-  }
-  log('=== 三种长度都被断开 ===', 'errline');
-}
-
-// —— 枚举全部 GATT 服务与特征值 ——
 async function enumerateAll() {
-  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
-  if (!device.gatt.connected) {
-    try { await device.gatt.connect(); } catch (e) { log('连接失败：' + e.message, 'errline'); return; }
-  }
-  log('=== 开始枚举 GATT ===');
-  let found = 0;
-  for (const uuid of ENUM_SERVICES) {
-    let svc = null;
+  if (!await ensureConnected()) return;
+  log('=== 枚举 GATT ===');
+  let n = 0;
+  for (const u of ENUM_SERVICES) {
     try {
-      svc = await device.gatt.getPrimaryService(uuid);
-    } catch (e) {
-      continue;   // 该服务不存在
-    }
-    found++;
-    log(`■ 服务 ${uuid}`, 'recv');
-    try {
-      const chars = await svc.getCharacteristics();
-      for (const c of chars) {
-        let props = [];
-        if (c.properties.read) props.push('read');
-        if (c.properties.write) props.push('write');
-        if (c.properties.writeWithoutResponse) props.push('writeNR');
-        if (c.properties.notify) props.push('notify');
-        if (c.properties.indicate) props.push('indicate');
-        log(`    └ ${c.uuid}  [${props.join(',') || '无属性'}]`);
+      const s = await device.gatt.getPrimaryService(u);
+      n++;
+      log('■ ' + u, 'recv');
+      const cs = await s.getCharacteristics();
+      for (const c of cs) {
+        const p = [];
+        if (c.properties.read) p.push('read');
+        if (c.properties.write) p.push('write');
+        if (c.properties.writeWithoutResponse) p.push('writeNR');
+        if (c.properties.notify) p.push('notify');
+        if (c.properties.indicate) p.push('indicate');
+        log('    └ ' + c.uuid + ' [' + p.join(',') + ']');
       }
-    } catch (e) {
-      log(`    └ 特征值读取失败：${e.message}`, 'errline');
-    }
+    } catch (e) {}
   }
-  if (found === 0) {
-    log('没有发现任何已列出的服务（可能全部未暴露，或需要先配对）', 'errline');
-  } else {
-    log(`=== 枚举结束，命中 ${found} 个服务 ===`, 'recv');
-  }
+  log('=== 命中 ' + n + ' 个服务 ===', 'recv');
 }
-
-
-// —— 读取 HAP 关键特征值（配对前可读的） ——
-const HAP_READS = [
-  ['0000003e-0000-1000-8000-0026bb765291', '00000020-0000-1000-8000-0026bb765291', 'HAP 协议版本'],
-  ['0000003e-0000-1000-8000-0026bb765291', '00000052-0000-1000-8000-0026bb765291', 'Accessory Flags'],
-  ['00000055-0000-1000-8000-0026bb765291', '0000004f-0000-1000-8000-0026bb765291', 'Pairing Features'],
-  ['00000055-0000-1000-8000-0026bb765291', '00000050-0000-1000-8000-0026bb765291', 'Pairings'],
-  ['00000055-0000-1000-8000-0026bb765291', 'e604e95d-a759-4817-87d3-aa005083a0d1', '未知特征值@55'],
-  ['0000003e-0000-1000-8000-0026bb765291', 'e604e95d-a759-4817-87d3-aa005083a0d1', '未知特征值@3E'],
-  ['00000044-0000-1000-8000-0026bb765291', '00000019-0000-1000-8000-0026bb765291', 'Lock Control Point'],
-  ['00000044-0000-1000-8000-0026bb765291', '00000037-0000-1000-8000-0026bb765291', 'Lock Mgmt 0x37'],
-];
 
 async function readHap() {
-  if (!device) { log('请先连接一次', 'errline'); return; }
-  if (!device.gatt.connected) {
-    try { await device.gatt.connect(); } catch (e) { log('连接失败：' + e.message, 'errline'); return; }
-  }
-  log('=== 读取 HAP 状态 ===');
-  for (const [su, cu, name] of HAP_READS) {
+  if (!await ensureConnected()) return;
+  const list = [
+    ['0000003e-0000-1000-8000-0026bb765291','00000020-0000-1000-8000-0026bb765291','HAP 版本'],
+    ['0000003e-0000-1000-8000-0026bb765291','00000052-0000-1000-8000-0026bb765291','Accessory Flags'],
+    ['00000055-0000-1000-8000-0026bb765291','0000004f-0000-1000-8000-0026bb765291','Pairing Features'],
+    ['00000055-0000-1000-8000-0026bb765291','00000050-0000-1000-8000-0026bb765291','Pairings'],
+    ['00000055-0000-1000-8000-0026bb765291','e604e95d-a759-4817-87d3-aa005083a0d1','未知@55'],
+    ['00000044-0000-1000-8000-0026bb765291','00000019-0000-1000-8000-0026bb765291','Lock Control Point']
+  ];
+  for (let i=0;i<list.length;i++) {
+    const su = list[i][0], cu = list[i][1], name = list[i][2];
     try {
-      const svc = await device.gatt.getPrimaryService(su);
-      const ch = await svc.getCharacteristic(cu);
-      const v = await ch.readValue();
-      log(`${name}: ${hex(new Uint8Array(v.buffer))}`, 'recv');
-    } catch (e) {
-      log(`${name}: 读取失败（${e.message.slice(0, 60)}）`, 'errline');
-    }
+      const s = await device.gatt.getPrimaryService(su);
+      const c = await s.getCharacteristic(cu);
+      const v = await c.readValue();
+      log(name + ': ' + hex(new Uint8Array(v.buffer)), 'recv');
+    } catch (e) { log(name + ': 读取失败', 'errline'); }
   }
-  log('=== 结束 ===');
 }
 
-
-// —— 测试 OTA 通道（明文，不需会话） ——
 async function testOta() {
   if (!await ensureConnected()) return;
   if (!otaCmdChar) { log('OTA 特征值不可用', 'errline'); return; }
-  // EE 14 FC 00*12 02 00
-  const f = new Uint8Array(18);
-  f[0] = 0xEE; f[1] = 0x14; f[16] = 0x02;
-  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
-  f[3] = (0 - sum) & 0xFF;
-  try {
-    await otaCmdChar.writeValueWithoutResponse(f);
-    log(`→ [OTA] ${hex(f)}`, 'send');
-  } catch (e) {
-    log(`OTA 写入失败：${e.message}`, 'errline');
-    return;
-  }
+  const f = plainFrame(0x14);
+  await otaCmdChar.writeValueWithoutResponse(f);
+  log('→ [OTA] ' + hex(f), 'send');
   await sleep(1500);
-  log(device.gatt.connected ? '✔ OTA 写入后连接保持' : '✘ OTA 写入后连接断开',
+  log(device.gatt.connected ? '✔ OTA 后连接保持' : '✘ OTA 后断链',
       device.gatt.connected ? 'recv' : 'errline');
 }
 
-async function probe() {
-  if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
-  const variants = [
-    { name: '明文 a1=0 a2=0 slot=0', ch: () => writeChar,    f: () => initFrame(0,0,0) },
-    { name: '明文 a1=0 a2=0 slot=1', ch: () => writeChar,    f: () => initFrame(0,0,1) },
-    { name: '明文 a1=1 a2=0 slot=1', ch: () => writeChar,    f: () => initFrame(1,0,1) },
-    { name: '明文 a1=0 a2=1 slot=1', ch: () => writeChar,    f: () => initFrame(0,1,1) },
-    { name: '明文 a1=1 a2=1 slot=1', ch: () => writeChar,    f: () => initFrame(1,1,1) },
-    { name: '加密 a1=0 a2=0 slot=1', ch: () => secWriteChar, f: () => initFrame(0,0,1) },
-  ];
-  log('=== 开始试探，每个变体 1.5 秒 ===');
-  for (const v of variants) {
-    if (!await ensureConnected()) { log('无法重连，中止', 'errline'); return; }
-    await sleep(400);
-    const ch = v.ch();
-    if (!ch) { log(`跳过 ${v.name}（特征值不存在）`, 'errline'); continue; }
-    const ok = await writeTo(ch, v.f(), 'INIT');
-    if (!ok) continue;
-    await sleep(1500);
-    if (device.gatt.connected) {
-      log(`✔ ${v.name} —— 连接保持住了`, 'recv');
-      log('这个变体被接受，用它继续配网', 'recv');
-      return;
-    }
-    log(`✘ ${v.name} —— 被断开`, 'errline');
+async function copyLog() {
+  const t = Array.from(logEl.children).map(function(d){return d.textContent.trim();}).join('\n');
+  if (!t) { log('日志为空'); return; }
+  try { await navigator.clipboard.writeText(t); log('已复制', 'recv'); }
+  catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    log('已复制', 'recv');
   }
-  log('=== 全部变体都被断开，需要换思路 ===', 'errline');
-}
-
-async function provision() {
-  let key, slot;
-  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
-  if (!await ensureConnected()) return;
-  log('开始配网…');
-  if (!await writeTo(writeChar, initFrame(0,0,slot), 'INIT')) return;
-  await sleep(400);
-  if (!await writeTo(writeChar, secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
-  await sleep(400);
-  if (!await writeTo(writeChar, secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
-  await sleep(400);
-  if (!await writeTo(writeChar, commitFrame(key, slot), 'COMMIT')) return;
-  log('四帧已发完，等待锁的回应…', 'recv');
-}
-
-// 配网 v2：先 SetClientBLEAddress，再走密钥流程
-async function provV2() {
-  let key, slot;
-  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
-  const mac = fromHex('E86CC7104671'); // 锁自身地址，先拿它试
-  if (!await ensureConnected()) return;
-  log('=== 配网 v2 开始 ===');
-
-  const step = async (frame, label) => {
-    if (!await ensureConnected()) { log(`✘ ${label} 之前就断了`, 'errline'); return false; }
-    await writeTo(writeChar, frame, label);
-    await sleep(600);
-    const alive = device.gatt.connected;
-    if (!alive) log(`✘ ${label} 之后被断开`, 'errline');
-    else log(`✔ ${label} 通过`, 'recv');
-    return alive;
-  };
-
-  if (!await step(setClientAddrFrame(0, mac), 'SET_CLIENT_ADDR')) return;
-  if (!await step(initFrame(0, 0, slot), 'INIT')) return;
-  if (!await step(secureFrame(0x11, key.subarray(0,8), 0), 'LOWER')) return;
-  if (!await step(secureFrame(0x13, key.subarray(8,16), 0), 'UPPER')) return;
-  if (!await step(commitFrame(key, slot), 'COMMIT')) return;
-  log('=== 四步全部通过，密钥应该写进去了 ===', 'recv');
-}
-
-async function sendStep(step) {
-  let key, slot;
-  try { ({key, slot} = readKeySlot()); } catch (e) { log(e.message, 'errline'); return; }
-  if (!await ensureConnected()) return;
-  const frames = {
-    init:   [writeChar, initFrame(0,0,slot), 'INIT'],
-    lower:  [writeChar, secureFrame(0x11, key.subarray(0,8), 0), 'LOWER'],
-    upper:  [writeChar, secureFrame(0x13, key.subarray(8,16), 0), 'UPPER'],
-    commit: [writeChar, commitFrame(key, slot), 'COMMIT'],
-  };
-  const [ch, f, label] = frames[step];
-  await writeTo(ch, f, label);
 }
 
 $('btnConnect').onclick = connect;
-$('btnReadAll').onclick = readAll;
-$('btnTestStatus').onclick = testStatus;
-$('btnTestLength').onclick = testLength;
+$('btnAuto').onclick = autoTest;
+$('btnCopyLog').onclick = copyLog;
 $('btnEnum').onclick = enumerateAll;
 $('btnHap').onclick = readHap;
 $('btnOta').onclick = testOta;
-$('btnSendPlain').onclick = async () => {
+
+$('btnHs').onclick = async function() {
   try {
-    const f = fromHex($('customFrame').value);
-    if (await ensureConnected()) writeTo(writeChar, f, '自定义/明文');
+    const r = await tryKey($('hsKey').value, parseInt($('hsSlot').value,10)||1);
+    log(r.ok ? ('★ 命中，响应 ' + r.notify) : ('失败：' + r.why), r.ok?'recv':'errline');
   } catch (e) { log(e.message, 'errline'); }
 };
-$('btnHkReset').onclick = async () => {
-  if (!confirm('HomeKit_Reset 可能清掉门锁的 HomeKit 配对（家庭 App 里的磁贴会失效）。\n\n继续？')) return;
-  const f = new Uint8Array(18);
-  f[0] = 0xEE; f[1] = 0x2E; f[16] = 0x02;
-  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
-  f[3] = (0 - sum) & 0xFF;
-  if (await ensureConnected()) writeTo(writeChar, f, 'HomeKit_Reset');
-  await sleep(1500);
-  log(device.gatt.connected ? '✔ 连接保持' : '✘ 连接断开',
-      device.gatt.connected ? 'recv' : 'errline');
-};
-
-$('btnSendSec').onclick = async () => {
+$('btnSendPlain').onclick = async function() {
   try {
     const f = fromHex($('customFrame').value);
-    if (await ensureConnected()) writeTo(secWriteChar || writeChar, f, '自定义/加密');
+    if (await ensureConnected()) { await writeChar.writeValueWithResponse(f); log('→ ' + hex(f), 'send'); }
   } catch (e) { log(e.message, 'errline'); }
 };
-$('btnProbe').onclick = probe;
-$('btnProv').onclick = provision;
-$('btnProv2').onclick = provV2;
-$('btnUnlock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0A), 'UNLOCK'); };
-$('btnLock').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x0B), 'LOCK'); };
-$('btnStatus').onclick = async () => { if (await ensureConnected()) writeTo(writeChar, plainFrame(0x02), 'GETSTATUS'); };
-document.querySelectorAll('[data-step]').forEach(b => {
-  b.onclick = () => sendStep(b.dataset.step);
-});
-
-// —— 一键复制日志 ——
-async function copyLog() {
-  const lines = Array.from(logEl.children).map(d => d.textContent.trim());
-  const text = lines.join('\n');
-  if (!text) { log('日志为空', 'errline'); return; }
+$('btnSendSec').onclick = async function() {
   try {
-    await navigator.clipboard.writeText(text);
-    log(`已复制 ${lines.length} 行日志`, 'recv');
-  } catch (e) {
-    // 兼容：clipboard API 不可用时用 execCommand
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      log(`已复制 ${lines.length} 行日志`, 'recv');
-    } catch (e2) {
-      log('复制失败：' + e2.message, 'errline');
+    const f = fromHex($('customFrame').value);
+    if (await ensureConnected()) { await secWriteChar.writeValueWithResponse(f); log('→ ' + hex(f), 'send'); }
+  } catch (e) { log(e.message, 'errline'); }
+};
+$('btnHkReset').onclick = async function() {
+  if (!confirm('HomeKit_Reset 可能清掉 HomeKit 配对，继续？')) return;
+  try {
+    const f = plainFrame(0x2E);
+    if (await ensureConnected()) {
+      await writeChar.writeValueWithResponse(f);
+      log('→ HomeKit_Reset ' + hex(f), 'send');
+      await sleep(1500);
+      log(device.gatt.connected ? '✔ 连接保持' : '✘ 断链', device.gatt.connected?'recv':'errline');
     }
-  }
-}
-
-$('btnCopyLog').onclick = copyLog;
+  } catch (e) { log(e.message, 'errline'); }
+};
 
 if (!navigator.bluetooth) {
-  log('这个浏览器不支持 Web Bluetooth，请用 Android Chrome。', 'errline');
+  log('此浏览器不支持 Web Bluetooth，请用 Android Chrome', 'errline');
   $('btnConnect').disabled = true;
 }
 </script>
