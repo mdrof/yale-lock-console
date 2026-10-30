@@ -68,6 +68,7 @@
   <button id="btnTestLength" class="ghost">帧长测试（16/18/20）</button>
   <button id="btnEnum" class="ghost">枚举 GATT 全部服务</button>
   <button id="btnHap" class="ghost">读取 HAP 状态</button>
+  <button id="btnOta" class="ghost">测 OTA 通道（0x14 查询）</button>
   <div class="hint">
     <b>读取</b>：看锁是否预置了挑战数据。<br>
     <b>GETSTATUS</b>：最无害的命令，只判断链路通不通——如果它也让连接断开，说明认证前任何命令都被拒。
@@ -163,6 +164,7 @@ const ENUM_SERVICES = [
 
 let device = null;
 let writeChar = null, notifyChar = null, secWriteChar = null, secNotifyChar = null;
+let otaCmdChar = null, otaDataChar = null;
 let listenerBound = false;
 
 const $ = id => document.getElementById(id);
@@ -286,6 +288,14 @@ async function setupChars() {
       });
     } catch (e) { /* ignore */ }
   }
+  try {
+    otaCmdChar = await service.getCharacteristic(CHAR_OTA_CMD);
+    otaDataChar = await service.getCharacteristic(CHAR_OTA_DATA);
+    await otaCmdChar.startNotifications();
+    otaCmdChar.addEventListener('characteristicvaluechanged', e => {
+      log(`← [OTA] ${hex(new Uint8Array(e.target.value.buffer))}`, 'recv');
+    });
+  } catch (e) { otaCmdChar = null; otaDataChar = null; }
 }
 
 async function ensureConnected() {
@@ -477,6 +487,28 @@ async function readHap() {
   log('=== 结束 ===');
 }
 
+
+// —— 测试 OTA 通道（明文，不需会话） ——
+async function testOta() {
+  if (!await ensureConnected()) return;
+  if (!otaCmdChar) { log('OTA 特征值不可用', 'errline'); return; }
+  // EE 14 FC 00*12 02 00
+  const f = new Uint8Array(18);
+  f[0] = 0xEE; f[1] = 0x14; f[16] = 0x02;
+  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
+  f[3] = (0 - sum) & 0xFF;
+  try {
+    await otaCmdChar.writeValueWithoutResponse(f);
+    log(`→ [OTA] ${hex(f)}`, 'send');
+  } catch (e) {
+    log(`OTA 写入失败：${e.message}`, 'errline');
+    return;
+  }
+  await sleep(1500);
+  log(device.gatt.connected ? '✔ OTA 写入后连接保持' : '✘ OTA 写入后连接断开',
+      device.gatt.connected ? 'recv' : 'errline');
+}
+
 async function probe() {
   if (!device) { log('请先点「连接门锁」选一次设备', 'errline'); return; }
   const variants = [
@@ -567,6 +599,7 @@ $('btnTestStatus').onclick = testStatus;
 $('btnTestLength').onclick = testLength;
 $('btnEnum').onclick = enumerateAll;
 $('btnHap').onclick = readHap;
+$('btnOta').onclick = testOta;
 $('btnSendPlain').onclick = async () => {
   try {
     const f = fromHex($('customFrame').value);
