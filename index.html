@@ -125,6 +125,7 @@
     <button id="btnSendPlain" class="ghost small">发到明文 611</button>
     <button id="btnSendSec" class="ghost small">发到加密 613</button>
   </div>
+  <button id="btnHkReset" class="ghost small">发送 HomeKit_Reset (0x2E)</button>
   <div class="hint">
     默认值是 <code>SEC_GET_FLASH_PAGE_DATA</code>（0x41）测试帧。<br>
     发完看日志：有 <code>←</code> 就是锁回应了，出现「连接已断开」就是被拒。
@@ -606,6 +607,18 @@ $('btnSendPlain').onclick = async () => {
     if (await ensureConnected()) writeTo(writeChar, f, '自定义/明文');
   } catch (e) { log(e.message, 'errline'); }
 };
+$('btnHkReset').onclick = async () => {
+  if (!confirm('HomeKit_Reset 可能清掉门锁的 HomeKit 配对（家庭 App 里的磁贴会失效）。\n\n继续？')) return;
+  const f = new Uint8Array(18);
+  f[0] = 0xEE; f[1] = 0x2E; f[16] = 0x02;
+  let sum = 0; for (const b of f) sum = (sum + b) & 0xFF;
+  f[3] = (0 - sum) & 0xFF;
+  if (await ensureConnected()) writeTo(writeChar, f, 'HomeKit_Reset');
+  await sleep(1500);
+  log(device.gatt.connected ? '✔ 连接保持' : '✘ 连接断开',
+      device.gatt.connected ? 'recv' : 'errline');
+};
+
 $('btnSendSec').onclick = async () => {
   try {
     const f = fromHex($('customFrame').value);
