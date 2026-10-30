@@ -399,6 +399,20 @@ async function readDis() {
   try { svc = await device.gatt.getPrimaryService(DIS_SVC); }
   catch (e) { log('DIS 服务不可用：' + e.message, 'errline'); return null; }
 
+  // ① 先枚举 DIS 下所有特征值及属性，看清哪些真正可读
+  try {
+    const cs = await svc.getCharacteristics();
+    log('DIS 特征值共 ' + cs.length + ' 个：', 'recv');
+    for (const c of cs) {
+      const p = [];
+      if (c.properties.read) p.push('read');
+      if (c.properties.write) p.push('write');
+      if (c.properties.notify) p.push('notify');
+      if (c.properties.indicate) p.push('indicate');
+      log('  · ' + c.uuid.slice(4,8).toUpperCase() + ' [' + (p.join(',')||'none') + ']');
+    }
+  } catch (e) { log('枚举 DIS 特征值失败：' + e.message, 'errline'); }
+
   const chars = [
     ['00002a25-0000-1000-8000-00805f9b34fb', '序列号 Serial',      true],
     ['00002a26-0000-1000-8000-00805f9b34fb', '固件版本 Firmware',  false],
@@ -411,20 +425,32 @@ async function readDis() {
   const rows = [];
   for (const item of chars) {
     const uuid = item[0], name = item[1], isSerial = item[2];
-    try {
-      const c = await svc.getCharacteristic(uuid);
-      const v = await c.readValue();
-      const text = dec.decode(new Uint8Array(v.buffer)).replace(/\0+$/,'').trim();
-      out[name] = text;
-      let line = name + '：' + (text || '(空)');
-      if (isSerial) {
-        const s = text.replace(/[^a-zA-Z0-9]/g,'');
-        out.serialRaw = text; out.serial = s;
-        line += '　→ 洗号：' + s + '（' + s.length + ' 字符）';
+    const tries = isSerial ? 3 : 1;
+    let text = null, lastErr = '';
+    for (let attempt = 1; attempt <= tries && text === null; attempt++) {
+      try {
+        const c = await svc.getCharacteristic(uuid);
+        const v = await c.readValue();
+        text = dec.decode(new Uint8Array(v.buffer)).replace(/\0+$/,'').trim();
+      } catch (e) {
+        lastErr = (e && e.name ? e.name : 'Error') + ': ' + (e && e.message ? e.message : e);
+        if (attempt < tries) await sleep(300);
       }
-      log(line, 'recv');
-      rows.push(line);
-    } catch (e) { log(name + '：读取失败', 'errline'); }
+    }
+    if (text === null) {
+      log(name + '：读取失败（' + lastErr + '）', 'errline');
+      rows.push(name + '：读取失败');
+      continue;
+    }
+    out[name] = text;
+    let line = name + '：' + (text || '(空)');
+    if (isSerial) {
+      const s = text.replace(/[^a-zA-Z0-9]/g,'');
+      out.serialRaw = text; out.serial = s;
+      line += '　→ 洗号：' + s + '（' + s.length + ' 字符）';
+    }
+    log(line, 'recv');
+    rows.push(line);
   }
 
   if (out.serial) {
@@ -437,7 +463,9 @@ async function readDis() {
               : ('✘ DIS=' + out.serial + '，标签=' + LABEL_SERIAL + '，以 DIS 为准'),
         match ? 'recv' : 'errline');
   } else {
-    rows.push('<b style="color:#ff5c5c">未读到序列号特征值</b>');
+    rows.push('<b style="color:#ff5c5c">0x2A25 读不到序列号</b>');
+    rows.push('BLE 名：' + (device.name || '(无)') + '　标签：' + LABEL_SERIAL);
+    log('0x2A25 读不到；BLE 名=' + (device.name||'(无)') + '，标签=' + LABEL_SERIAL + '（原厂 App 读失败也用 "unknown" 兜底）', 'errline');
   }
   const box = $('disResult');
   if (box) box.innerHTML = rows.map(function(r){ return '<div>' + r + '</div>'; }).join('');
