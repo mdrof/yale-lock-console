@@ -55,6 +55,15 @@
 </div>
 
 <div class="card">
+  <label>序列号核对（无需密钥）</label>
+  <button id="btnDis" class="ghost small">读 DIS 序列号 (0x2A25)</button>
+  <div class="hint">
+    从蓝牙标准设备信息服务 <code>0x180A</code> 读锁自报的序列号 / 固件 / 厂商，自动洗掉非字母数字并与标签 <code>L8C7W0006Z</code> 比对
+  </div>
+  <div class="res" id="disResult"></div>
+</div>
+
+<div class="card">
   <label>一键检测</label>
   <button id="btnAuto">开始自动检测</button>
   <div class="hint">
@@ -110,6 +119,9 @@ const C_SEC_W = 'bd4ac613-0b45-11e3-8ffd-0800200c9a66';
 const C_SEC_R = 'bd4ac614-0b45-11e3-8ffd-0800200c9a66';
 const C_OTA_C = 'bd4ac615-0b45-11e3-8ffd-0800200c9a66';
 const C_OTA_D = 'bd4ac616-0b45-11e3-8ffd-0800200c9a66';
+
+const DIS_SVC = '0000180a-0000-1000-8000-00805f9b34fb';
+const LABEL_SERIAL = 'L8C7W0006Z';
 
 const ENUM_SERVICES = [
   SVC_AUGUST,
@@ -286,6 +298,13 @@ async function autoTest() {
     if (!await ensureConnected()) { add('连接','失败'); return; }
     add('连接','成功');
 
+    const dis = await readDis();
+    if (dis && dis.serial) {
+      add('DIS 序列号', dis.serial + (dis.match ? ' ✔ 与标签一致' : ' ✘ 与标签不符（以 DIS 为准）'), dis.match);
+    } else {
+      add('DIS 序列号', '读不到');
+    }
+
     const found = [];
     for (const u of ENUM_SERVICES) {
       try { await device.gatt.getPrimaryService(u); found.push(u.slice(0,8)); } catch(e){}
@@ -306,6 +325,20 @@ async function autoTest() {
       if (r.ok) { add('密钥「'+name+'」', '★ 命中，响应=' + r.notify, true); hit = name; break; }
       add('密钥「'+name+'」', r.why);
     }
+    // ⑤ 用广播锁 ID 扫槽位 0-5
+    if (!hit) {
+      const lockId = 'e6cf450e5bfd264f8bcb9228d6ee2d1a';
+      for (let slot = 0; slot <= 5; slot++) {
+        const r = await tryKey(lockId, slot);
+        if (r.ok) { add('槽位 ' + slot, '★ 命中，响应=' + r.notify, true); hit = '槽位' + slot; break; }
+        add('槽位 ' + slot, r.why);
+      }
+    }
+    // ⑥ 全零密钥 × 槽位 0（管理员槽位）
+    add('--- 专项测试：全零×槽位0 ---','');
+    const r0 = await tryKey('00000000000000000000000000000000', 0);
+    if (r0.ok) { add('★ 全零×槽位0', '命中！响应=' + r0.notify, true); hit = '零槽0'; }
+    else { add('全零×槽位0', r.why || r0.why || '失败'); }
     add('结论', hit ? ('密钥命中：' + hit) : '全部失败');
   } catch (e) {
     add('异常', e.message);
@@ -359,6 +392,58 @@ async function readHap() {
   }
 }
 
+async function readDis() {
+  if (!await ensureConnected()) return null;
+  const dec = new TextDecoder('utf-8');
+  let svc;
+  try { svc = await device.gatt.getPrimaryService(DIS_SVC); }
+  catch (e) { log('DIS 服务不可用：' + e.message, 'errline'); return null; }
+
+  const chars = [
+    ['00002a25-0000-1000-8000-00805f9b34fb', '序列号 Serial',      true],
+    ['00002a26-0000-1000-8000-00805f9b34fb', '固件版本 Firmware',  false],
+    ['00002a29-0000-1000-8000-00805f9b34fb', '厂商 Manufacturer',  false],
+    ['00002a24-0000-1000-8000-00805f9b34fb', '型号 Model',         false],
+    ['00002a27-0000-1000-8000-00805f9b34fb', '硬件版本 Hardware',  false],
+    ['00002a28-0000-1000-8000-00805f9b34fb', '软件版本 Software',  false]
+  ];
+  const out = {};
+  const rows = [];
+  for (const item of chars) {
+    const uuid = item[0], name = item[1], isSerial = item[2];
+    try {
+      const c = await svc.getCharacteristic(uuid);
+      const v = await c.readValue();
+      const text = dec.decode(new Uint8Array(v.buffer)).replace(/\0+$/,'').trim();
+      out[name] = text;
+      let line = name + '：' + (text || '(空)');
+      if (isSerial) {
+        const s = text.replace(/[^a-zA-Z0-9]/g,'');
+        out.serialRaw = text; out.serial = s;
+        line += '　→ 洗号：' + s + '（' + s.length + ' 字符）';
+      }
+      log(line, 'recv');
+      rows.push(line);
+    } catch (e) { log(name + '：读取失败', 'errline'); }
+  }
+
+  if (out.serial) {
+    const match = out.serial === LABEL_SERIAL;
+    out.match = match;
+    rows.push(match
+      ? '<b style="color:#3ddc84">✔ DIS 与标签一致：' + LABEL_SERIAL + '</b>'
+      : '<b style="color:#ff5c5c">✘ 不一致：DIS=' + out.serial + '，标签=' + LABEL_SERIAL + '（以 DIS 为准）</b>');
+    log(match ? ('✔ DIS 序列号与标签一致：' + LABEL_SERIAL)
+              : ('✘ DIS=' + out.serial + '，标签=' + LABEL_SERIAL + '，以 DIS 为准'),
+        match ? 'recv' : 'errline');
+  } else {
+    rows.push('<b style="color:#ff5c5c">未读到序列号特征值</b>');
+  }
+  const box = $('disResult');
+  if (box) box.innerHTML = rows.map(function(r){ return '<div>' + r + '</div>'; }).join('');
+  return out;
+}
+
 async function testOta() {
   if (!await ensureConnected()) return;
   if (!otaCmdChar) { log('OTA 特征值不可用', 'errline'); return; }
@@ -388,6 +473,7 @@ $('btnCopyLog').onclick = copyLog;
 $('btnEnum').onclick = enumerateAll;
 $('btnHap').onclick = readHap;
 $('btnOta').onclick = testOta;
+$('btnDis').onclick = readDis;
 
 $('btnHs').onclick = async function() {
   try {
