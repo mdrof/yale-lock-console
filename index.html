@@ -58,21 +58,19 @@
 </div>
 
 <div class="card">
-  <label>HomeKit 配对清除 · 软复位 0x24（单次写入，需二次确认）</label>
+  <label>HomeKit 配对清除 · 软复位 0x24（已实测无效，保留供窗口期实验）</label>
   <select id="resetParam">
-    <option value="2">参数 2 = 仅 ResetHomekitKeys（推荐，不动其他配置）</option>
-    <option value="55">参数 55 = 完整软复位（App 配网用，含清离线密钥/注册/WiFi）</option>
-    <option value="0">参数 0 = 硬复位（factoryReset(0)，影响最大，不建议）</option>
+    <option value="2">参数 2 = 仅 ResetHomekitKeys</option>
+    <option value="55">参数 55 = 完整软复位（App 配网用）</option>
+    <option value="0">参数 0 = 硬复位（不建议）</option>
   </select>
   <div class="res" id="resetPreview"></div>
   <button id="btnSoftReset" class="warn small">预览并发送一次（需确认）</button>
-  <div class="hint">
-    <b>用法</b>：① 点「连接门锁」→ ② 核对下方预览帧 → ③ 点红按钮并确认两次 → ④ 用 nRF Connect 重扫广播，看第 3 字节是否 <code>00</code>→<code>01</code>。<br>
-    <b>目标</b>：清除锁端残留的 HAP 配对，让广播 Status Flags 从 <code>00</code>（已绑定）变回 <code>01</code>（可发现），家庭 App 才能重新添加。<br>
-    <b>帧依据</b>：反汇编 <code>augLockCmdFactoryResetWithParam</code> —— opcode <code>0x24</code>、参数写 <code>[4]</code>、<code>[16]=0x02</code>、8 位补码校验在 <code>[3]</code>。<br>
-    <b>规则</b>：默认只预览不发送；一次只发一条；断链/异常即停，不自动重试；无批量、无扫描。<br>
-    <b>判读</b>：复位可能让锁重启并断链，<b>断链 ≠ 失败</b>。唯一标准是重扫后广播第 3 字节翻转。<br>
-    <b>风险</b>：写操作。参数 2 按位定义只清 HomeKit 密钥，但固件实际行为未实测；执行前请确认能重新录指纹/密码/卡。
+  <div class="hint" style="color:#ffc56b">
+    <b>⚠ 2026-11-09 实测结论</b>：在普通连接态发 param=2 两轮，TX 写入成功但锁立即断链，广播与基线完全一致 → <b>命令未执行</b>。<br>
+    <b>原因</b>：复查代码确认，所有 DATA 通道命令都在 <code>Authorized_ReadyToSend</code> 之后发出并会被 <code>encryptDataPacket()</code> 加密；连上锁后系统会立即 <code>securityHandshake()</code>。此前「免密钥」判断是误读：<code>Authorizing_ReadyToSend</code> 的透传是给「已用 handshakeKey 预加密的握手帧」用的，不是放行任意明文。<br>
+    <b>因此</b>：换 param=55 / 0 无意义（同样缺会话密钥）。<b>请勿在未授权链路上重复发送任何 0x24 变体。</b><br>
+    <b>唯一未试组合</b>：先按面板 <code>M → R → 7</code> 打开「登记蓝牙」窗口，在窗口期内发本帧（窗口可能豁免授权）。若仍无效，请转物理复位垫或 P3 制造端授权恢复。
   </div>
 </div>
 
@@ -102,6 +100,21 @@
   <div class="hint">
     找法：nRF Connect 扫到 <code>L80006Z</code> 后<b>不要连</b>，展开 <code>Company: Apple, Inc. &lt;0x004C&gt;</code> 复制 Data。
     可粘完整 AD 结构（含 <code>4C 00</code> 前缀），会自动定位 <code>06 31</code>。
+  </div>
+</div>
+
+<div class="card">
+  <label>原生 HAP Pair Setup 探针（绕开 iOS 过滤，走独立认证栈）</label>
+  <button id="btnHapEnum" class="ghost small">① 枚举 0x55 Pairing 服务（只读）</button>
+  <button id="btnHapM1" class="warn small">② 发一次 Pair Setup M1（需二次确认）</button>
+  <div class="res" id="hapProbeResult"></div>
+  <div class="hint">
+    <b>背景</b>：广播 <code>Status Flags=00</code> 只让 iOS 家庭 App 把配件过滤掉，不等于 GATT 层禁用了 Pair Setup。
+    HAP 用 8 位配对码做 SRP，<b>不需要 August 密钥、不需要云</b>。<br>
+    <b>规则</b>：① 纯只读；② 只发一帧、需确认、断链即停、不重试、完整记录原始 TLV8。<br>
+    <b>判读</b>：<code>Error=6 Unavailable</code> = 锁确定答复「已配对」→ 此路关闭；
+    <code>M2 + Salt + PublicKey</code> = 锁愿意配对 → 转 <code>homekit_python pair_ble</code>。<br>
+    <b>不能做</b>：不完成配对、不开锁、不清配对（脚本只问一句，见 notes/29）。
   </div>
 </div>
 
@@ -188,6 +201,10 @@ let otaCmdChar = null;
 let listenerBound = false;
 let lastNotify = null;
 let probeStopped = false;
+let hapSetupChar = null;   // 0x55/Pair Setup(0x4C) 特征值，断链后失效需重新枚举
+let hapM1Sent = false;     // 单次锁：本轮连接只准发一帧 M1
+// 特征值通知回调保存引用：重连时先移除旧监听，避免同一条通知打印 N 次
+let _notifyCbs = {};
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
@@ -196,12 +213,16 @@ function log(text, cls) {
   const t = new Date().toLocaleTimeString('zh-CN', {hour12:false});
   const d = document.createElement('div');
   d.className = 'logline';
-  d.innerHTML = '<span class="t">' + t + '</span><span class="' + (cls||'') + '">' + text + '</span>';
+  d.innerHTML = '<span class="t">' + t + '</span><span class="' + (cls||'') + '">' + esc(text) + '</span>';
   logEl.appendChild(d);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
 const hex = u8 => Array.from(u8, b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+// Web Bluetooth 的 readValue() 返回 DataView；必须尊重 byteOffset/byteLength，
+// 直接取 .buffer 可能把缓冲区里其它字节也带进来，导致帧/TLV 判读错位。
+const dvBytes = v => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fromHex = s => {
   const c = s.replace(/[^0-9a-fA-F]/g,'');
   if (c.length % 2) throw new Error('hex 长度必须是偶数');
@@ -249,24 +270,22 @@ async function setupChars() {
   secWriteChar = await svc.getCharacteristic(C_SEC_W);
   secNotifyChar = await svc.getCharacteristic(C_SEC_R);
 
+  // 用命名回调：重连时先移除旧监听再挂新的，避免一条通知打印多行
+  if (!_notifyCbs.plain)   _notifyCbs.plain   = e => { const h = hex(dvBytes(e.target.value)); lastNotify = h; log('← [明文] ' + h, 'recv'); };
+  if (!_notifyCbs.secure)  _notifyCbs.secure  = e => { const h = hex(dvBytes(e.target.value)); lastNotify = h; log('← [加密] ' + h, 'recv'); };
+  if (!_notifyCbs.ota)     _notifyCbs.ota     = e => { log('← [OTA] ' + hex(dvBytes(e.target.value)), 'recv'); };
+  notifyChar.removeEventListener('characteristicvaluechanged', _notifyCbs.plain);
+  secNotifyChar.removeEventListener('characteristicvaluechanged', _notifyCbs.secure);
+  if (otaCmdChar) otaCmdChar.removeEventListener('characteristicvaluechanged', _notifyCbs.ota);
+
   await notifyChar.startNotifications();
-  notifyChar.addEventListener('characteristicvaluechanged', e => {
-    const h = hex(new Uint8Array(e.target.value.buffer));
-    lastNotify = h;
-    log('← [明文] ' + h, 'recv');
-  });
+  notifyChar.addEventListener('characteristicvaluechanged', _notifyCbs.plain);
   await secNotifyChar.startNotifications();
-  secNotifyChar.addEventListener('characteristicvaluechanged', e => {
-    const h = hex(new Uint8Array(e.target.value.buffer));
-    lastNotify = h;
-    log('← [加密] ' + h, 'recv');
-  });
+  secNotifyChar.addEventListener('characteristicvaluechanged', _notifyCbs.secure);
   try {
     otaCmdChar = await svc.getCharacteristic(C_OTA_C);
     await otaCmdChar.startNotifications();
-    otaCmdChar.addEventListener('characteristicvaluechanged', e => {
-      log('← [OTA] ' + hex(new Uint8Array(e.target.value.buffer)), 'recv');
-    });
+    otaCmdChar.addEventListener('characteristicvaluechanged', _notifyCbs.ota);
   } catch (e) { otaCmdChar = null; }
 }
 
@@ -295,6 +314,7 @@ async function connect() {
         device.addEventListener('gattserverdisconnected', function(){
           setConnected(false);
           probeStopped = true;
+          hapSetupChar = null;   // 断链后旧 GATTCharacteristic 对象失效，必须重新枚举
           log('⛔ 断链（gattserverdisconnected）— 已停止，不自动重试', 'errline');
         });
         listenerBound = true;
@@ -305,6 +325,7 @@ async function connect() {
     await setupChars();
     setConnected(true, device.name || '');
     probeStopped = false;
+    hapM1Sent = false;
     $('btnSoftReset').disabled = false;
     log('已连接并订阅通知', 'recv');
   } catch (e) { log('连接失败：' + e.message, 'errline'); }
@@ -331,7 +352,7 @@ async function autoTest() {
   $('btnAuto').disabled = true;
   const rows = [];
   const add = function(k,v,hit){
-    rows.push('<div class="' + (hit?'hit':'') + '">' + k + '：' + v + '</div>');
+    rows.push('<div class="' + (hit?'hit':'') + '">' + esc(k) + '：' + esc(v) + '</div>');
     $('result').innerHTML = rows.join('');
   };
   try {
@@ -355,7 +376,7 @@ async function autoTest() {
       const s = await device.gatt.getPrimaryService('00000055-0000-1000-8000-0026bb765291');
       const c = await s.getCharacteristic('e604e95d-a759-4817-87d3-aa005083a0d1');
       const v = await c.readValue();
-      add('HAP 标识', hex(new Uint8Array(v.buffer)));
+      add('HAP 标识', hex(dvBytes(v)));
     } catch (e) { add('HAP 标识','读不到'); }
 
     let hit = null;
@@ -378,7 +399,7 @@ async function autoTest() {
     add('--- 专项测试：全零×槽位0 ---','');
     const r0 = await tryKey('00000000000000000000000000000000', 0);
     if (r0.ok) { add('★ 全零×槽位0', '命中！响应=' + r0.notify, true); hit = '零槽0'; }
-    else { add('全零×槽位0', r.why || r0.why || '失败'); }
+    else { add('全零×槽位0', r0.why || '失败'); }
     add('结论', hit ? ('密钥命中：' + hit) : '全部失败');
   } catch (e) {
     add('异常', e.message);
@@ -432,7 +453,7 @@ async function readHap() {
       const s = await device.gatt.getPrimaryService(su);
       const c = await s.getCharacteristic(cu);
       const v = await c.readValue();
-      const h = hex(new Uint8Array(v.buffer));
+      const h = hex(dvBytes(v));
       let note = '';
       if (name.indexOf('0xA6') >= 0) {
         note = '  (uint32, Paired Read；未配对读到的值不可信，需 HAP 会话)';
@@ -484,7 +505,7 @@ async function readDis() {
       try {
         const c = await svc.getCharacteristic(uuid);
         const v = await c.readValue();
-        text = dec.decode(new Uint8Array(v.buffer)).replace(/\0+$/,'').trim();
+        text = dec.decode(dvBytes(v)).replace(/\0+$/,'').trim();
       } catch (e) {
         lastErr = (e && e.name ? e.name : 'Error') + ': ' + (e && e.message ? e.message : e);
         if (/blocklist/i.test(lastErr)) lastErr += ' → Chrome 屏蔽该 UUID，请用 nRF Connect 原生读取';
@@ -497,6 +518,7 @@ async function readDis() {
       continue;
     }
     out[name] = text;
+    // line 保持原文：log() 内部会 esc，写进 innerHTML 时再单独 esc，避免双重转义
     let line = name + '：' + (text || '(空)');
     if (isSerial) {
       const s = text.replace(/[^a-zA-Z0-9]/g,'');
@@ -504,7 +526,7 @@ async function readDis() {
       line += '　→ 洗号：' + s + '（' + s.length + ' 字符）';
     }
     log(line, 'recv');
-    rows.push(line);
+    rows.push(esc(line));
   }
 
   if (out.serial) {
@@ -512,17 +534,18 @@ async function readDis() {
     out.match = match;
     rows.push(match
       ? '<b style="color:#3ddc84">✔ DIS 与标签一致：' + LABEL_SERIAL + '</b>'
-      : '<b style="color:#ff5c5c">✘ 不一致：DIS=' + out.serial + '，标签=' + LABEL_SERIAL + '（以 DIS 为准）</b>');
+      : '<b style="color:#ff5c5c">✘ 不一致：DIS=' + esc(out.serial) + '，标签=' + LABEL_SERIAL + '（以 DIS 为准）</b>');
     log(match ? ('✔ DIS 序列号与标签一致：' + LABEL_SERIAL)
               : ('✘ DIS=' + out.serial + '，标签=' + LABEL_SERIAL + '，以 DIS 为准'),
         match ? 'recv' : 'errline');
   } else {
     rows.push('<b style="color:#ff5c5c">0x2A25 读不到序列号</b>');
-    rows.push('BLE 名：' + (device.name || '(无)') + '　标签：' + LABEL_SERIAL);
+    rows.push('BLE 名：' + esc(device.name || '(无)') + '　标签：' + LABEL_SERIAL);
     rows.push('Chrome 屏蔽 0x2A25，需用 nRF Connect 原生读取');
     log('0x2A25 读不到；BLE 名=' + (device.name||'(无)') + '，标签=' + LABEL_SERIAL + '（Chrome 屏蔽该 UUID；原厂 App 读失败也用 "unknown" 兜底）', 'errline');
   }
   const box = $('disResult');
+  // rows 里既有已转义的纯文本，也有本页自己构造的 <b> 标签，故此处不再整体 esc
   if (box) box.innerHTML = rows.map(function(r){ return '<div>' + r + '</div>'; }).join('');
   return out;
 }
@@ -718,8 +741,9 @@ function parseAdv() {
 
   const rows = [];
   rows.push('<div>原始：<code>' + hex(new Uint8Array(a)) + '</code></div>');
+  // bit0 = 未绑定/可发现；整字节可能还含其它位，判读按 bit0，显示按实际字节
   rows.push('<div><b>Status Flags</b> = <code>0x' + sf.toString(16).padStart(2,'0').toUpperCase() + '</code> → <b>' +
-    (sf & 1 ? '01 未绑定 / 可发现' : '00 已绑定 / 不可发现') + '</b>（基线 0x00）</div>');
+    (sf & 1 ? 'bit0=1 未绑定 / 可发现' : 'bit0=0 已绑定 / 不可发现') + '</b>（基线 0x00）</div>');
   rows.push('<div>Device ID = <code>' + did + '</code>（基线 ' + base.did + '）</div>');
   rows.push('<div>Category = ' + cat + ' (Locks) · GSN = ' + gsn + '（基线 ' + base.gsn + '）· ConfigNum = ' + cn + '</div>');
   rows.push('<div>Setup Hash = <code>' + hash + '</code>（基线 ' + base.hash + '）</div>');
@@ -729,7 +753,7 @@ function parseAdv() {
   if (sf & 1) {
     verdict = '✔ 成功：锁已回到未绑定态。立刻去家庭 App 添加配件，输 232-06-264。'; color = '#3ddc84';
   } else if (changed.length) {
-    verdict = '⚠ 锁确实变了（' + changed.join(', ') + '），但 Status Flags 仍为 00：帧被执行了，HomeKit 配对却没被清。下一步考虑参数 55，先别重复发 2。'; color = '#ffc56b';
+    verdict = '⚠ 锁确实变了（' + changed.join(', ') + '），但 Status Flags bit0 仍为 0：帧被执行了，HomeKit 配对却没被清。下一步考虑参数 55，先别重复发 2。'; color = '#ffc56b';
   } else {
     verdict = '✘ 与基线完全一致：帧很可能被锁端拒绝（未授权明文帧）。不要重复发同一帧；需换思路（见 notes/27）。'; color = '#ff8f8f';
   }
@@ -738,6 +762,197 @@ function parseAdv() {
   log('广播判读：SF=0x' + sf.toString(16).toUpperCase() + '，差异=' + (changed.join(',')||'无') + ' → ' + verdict.slice(0,24), 'recv');
 }
 $('btnParseAdv').onclick = parseAdv;
+
+const HAP_SVC = '00000055-0000-1000-8000-0026bb765291';
+const HAP_CHAR_INSTANCE_ID_DESC = 'dc46f0fe-81d2-4616-b5d9-6abdd796939a'; // Characteristic Instance ID 描述符
+// Pair Setup M1 TLV8（Method=PairSetup(0), State=M1(1)）
+const HAP_M1_TLV = new Uint8Array([0x00,0x01,0x00,0x06,0x01,0x01]);
+const TLV_NAME = {0:'Method',1:'Identifier',2:'Salt',3:'PublicKey',4:'Proof',
+  5:'EncryptedData',6:'State',7:'Error',8:'RetryDelay',9:'Certificate',
+  10:'Signature',11:'Permissions',19:'Flags',255:'Separator'};
+const HAP_ERR = {1:'Unknown',2:'AuthenticationFailed',3:'Backoff',
+  4:'MaxPeers',5:'MaxTries',6:'Unavailable',7:'Busy'};
+
+function parseHapTlv(u8) {
+  const items = []; let i = 0; const lines = [];
+  if (!u8 || typeof u8.length !== 'number') return {items, text: '(empty)'};
+  while (i + 1 < u8.length) {
+    const t = u8[i], n = u8[i+1];
+    const v = Array.from(u8.slice(i+2, i+2+n));
+    i += 2 + n;
+    items.push({t, v});
+    let extra = '';
+    if (t === 7 && v.length) extra = ' → ' + (HAP_ERR[v[0]] || '?') + '(' + v[0] + ')';
+    if (t === 6 && v.length) extra = ' → M' + v[0];
+    lines.push((TLV_NAME[t] || '0x'+t.toString(16)) + '(' + t + ') len=' + n +
+               ' val=' + v.map(x=>x.toString(16).padStart(2,'0')).join('') + extra);
+    if (n === 0) break;
+  }
+  return {items, text: lines.join(' | ') || '(empty)'};
+}
+
+function hapVerdict(u8) {
+  const {items, text} = parseHapTlv(u8);
+  const errItem = items.find(x => x.t === 7 && x.v.length);
+  const stateItem = items.find(x => x.t === 6 && x.v.length);
+  const has = t => items.some(x => x.t === t);
+  if (errItem) {
+    const e = errItem.v[0];
+    if (e === 6) return {text:'✘ Unavailable(6)：锁端确定答复「已配对」→ 原生 Pair Setup 这条路关闭，回硬件复位 / P3', c:'#ff8f8f'};
+    if (e === 2) return {text:'⚠ AuthenticationFailed(2)：M1 被受理，但认证方式/配对码有问题，换 -s hw/sw 复核', c:'#ffc56b'};
+    if (e === 3 || e === 5) return {text:'⛔ Backoff/MaxTries：配对退避，停止，别重试', c:'#ff8f8f'};
+    return {text:'⚠ 错误 ' + (HAP_ERR[e]||e) + '(' + e + ')：非 Unavailable，说明 M1 至少被解析了 → 值得用 homekit_python 深挖', c:'#ffc56b'};
+  }
+  if (stateItem && stateItem.v[0] === 2 && has(2) && has(3))
+    return {text:'★ 锁返回 M2（Salt + PublicKey）＝愿意开始配对！立刻转 homekit_python pair_ble 走完 SRP', c:'#3ddc84'};
+  return {text:'？未识别的响应，不结论。普通 HAP 特征值需 PDU 封装，但 Pair Setup 按规范是裸 TLV8；若异常可能是固件差异', c:'#ffc56b'};
+}
+
+async function hapEnum() {
+  if (!await ensureConnected()) return;
+  hapSetupChar = null;
+  const rows = [];
+  try {
+    const svc = await device.gatt.getPrimaryService(HAP_SVC);
+    const chars = await svc.getCharacteristics();
+    log('── 0x55 Pairing 服务枚举（只读）──');
+    for (const c of chars) {
+      const short = c.uuid.slice(4,8).toUpperCase();
+      const props = [];
+      if (c.properties.read) props.push('read');
+      if (c.properties.write) props.push('write');
+      if (c.properties.writeWithoutResponse) props.push('writeNR');
+      if (c.properties.notify) props.push('notify');
+      if (c.properties.indicate) props.push('indicate');
+      const line = '· ' + c.uuid + '  [' + short + ']  ' + props.join(',');
+      log(line, 'recv');
+      rows.push('<div>' + esc(line) + '</div>');
+      if (short === '004C') hapSetupChar = c;
+      // ⚠ 不读 0x4C Pair Setup / 0x4D Pair Verify：
+      // Apple ADK 证实「读」会驱动 M1→M2 状态机并生成 SRP 参数，不是无害只读；
+      // state 0 直接读还会触发 InvalidState + session reset。
+      const skip = (short === '004C' || short === '004D');
+      if (c.properties.read && !skip) {
+        try {
+          const v = await c.readValue();
+          const u8 = dvBytes(v);
+          const r = '← ' + hex(u8) + '  ' + parseHapTlv(u8).text;
+          log(r, 'recv');
+          rows.push('<div>' + esc(r) + '</div>');
+        } catch (e) {
+          const r = '← [' + short + '] 读失败（' + (e.name||'Error') + '）';
+          log(r, 'errline');
+          rows.push('<div>' + esc(r) + '</div>');
+        }
+      }
+    }
+    rows.push('<div style="color:' + (hapSetupChar ? '#3ddc84' : '#ff8f8f') + '"><b>' +
+      (hapSetupChar ? '✔ 找到 Pair Setup (0x4C)：已跳过其读取（读会驱动配对状态机），确认 IID 后可发 M1'
+                    : '✘ 未找到 Pair Setup (0x4C)，不发 M1') + '</b></div>');
+  } catch (e) {
+    const r = '0x55 服务不可用：' + (e.name||'Error') + ': ' + (e.message||e);
+    log(r, 'errline');
+    rows.push('<div style="color:#ff8f8f">' + esc(r) + '</div>');
+  }
+  $('hapProbeResult').innerHTML = rows.join('');
+}
+
+async function hapSendM1() {
+  if (probeStopped) { log('已发生断链，本轮已停止。请点「连接门锁」重新建立连接后再枚举。', 'errline'); return; }
+  if (hapM1Sent) { log('本轮连接已发过一次 M1，不重试。如需再测请先断开并重连。', 'errline'); return; }
+  if (!await ensureConnected()) return;
+  if (!hapSetupChar) { log('请先点「① 枚举」，未找到 0x4C 不发帧', 'errline'); return; }
+  if (!hapSetupChar.properties.write && !hapSetupChar.properties.writeWithoutResponse) {
+    log('0x4C 不可写，不发帧', 'errline'); return;
+  }
+  // HAP BLE 特征值读写必须套 HAP-BLE PDU（Apple HAP R2 §7.3；homekit_python ble_impl 同构）：
+  //   控制字段 0x00 + opcode 0x02(CHAR_WRITE) + TID + 特征IID(LE16) + bodyLen(LE16) + body
+  // body 双层 TLV8：外层 ParamReturnResponse(0x09)=0x01 包住内层 Value(0x01)=M1 TLV8
+  let iid = null;
+  try {
+    const descs = await hapSetupChar.getDescriptors();
+    let d = null;
+    for (const x of descs) if (x.uuid.toLowerCase() === HAP_CHAR_INSTANCE_ID_DESC) d = x;
+    if (!d) { log('0x4C 无 Characteristic Instance ID 描述符，无法构造 PDU，不发帧', 'errline'); return; }
+    const dv = await d.readValue();
+    const raw = dvBytes(dv);
+    if (raw.length < 2) { log('IID 描述符长度异常: ' + hex(raw), 'errline'); return; }
+    iid = raw[0] | (raw[1] << 8);   // 小端 16 位
+    log('特征 IID = ' + iid + ' (0x' + iid.toString(16) + ')', 'recv');
+  } catch (e) {
+    log('读 IID 描述符失败：' + (e.name||'Error') + ': ' + (e.message||e), 'errline');
+    log('⛔ 已停止，不重试', 'errline'); return;
+  }
+
+  const m1 = Array.from(HAP_M1_TLV);
+  const reqTlv = [0x09,0x01,0x01, 0x01, m1.length].concat(m1);
+  const tid = Math.floor(Math.random()*254) + 1;
+  const pdu = [0x00, 0x02, tid,
+               iid & 0xFF, (iid >> 8) & 0xFF,
+               reqTlv.length & 0xFF, (reqTlv.length >> 8) & 0xFF].concat(reqTlv);
+  const pduU8 = new Uint8Array(pdu);
+
+  if (!confirm('⚠ 将向 0x55/Pair Setup 发送【一次】HAP-BLE Pair Setup 写请求（PDU 封装）：\n\n' +
+      hex(pduU8) + '\n\n' +
+      'IID=' + iid + ' · bodyLen=' + reqTlv.length + ' · M1 TLV8=' + hex(HAP_M1_TLV) + '\n\n' +
+      '· 不需要 August 密钥、不需要云\n' +
+      '· 只发一帧；断链即停，不自动重试\n' +
+      '· 错配对码会消耗锁端尝试计数(0-100)；不改指纹/密码/卡\n\n继续？')) {
+    log('已取消，未发送', 'errline'); return;
+  }
+  if (!confirm('最后确认：真的发送这一帧吗？\n' + hex(pduU8))) {
+    log('已取消，未发送', 'errline'); return;
+  }
+  hapM1Sent = true;   // 无论成败都不重试
+  log('── 原生 HAP M1 单次实验（PDU 封装）──');
+  log('IID=' + iid + ' · PDU：00 02 TID IID LE16 bodyLen LE16 + [09 01 01 | 01 06 | M1]');
+  log('TX：' + hex(pduU8), 'send');
+  try {
+    if (hapSetupChar.properties.write) await hapSetupChar.writeValueWithResponse(pduU8);
+    else await hapSetupChar.writeValueWithoutResponse(pduU8);
+    log('TX 写入完成（GATT 层成功，不代表锁已执行）', 'send');
+  } catch (e) {
+    log('TX 失败：' + (e.name||'Error') + ': ' + (e.message||e), 'errline');
+    log('⛔ 已停止，不重试', 'errline'); return;
+  }
+  await sleep(2000);
+  if (!device.gatt.connected) {
+    log('⛔ 断链 — 已停止，不重试', 'errline');
+    $('hapProbeResult').innerHTML = '<div style="color:#ff8f8f">断链，判不了。可能是固件拒绝或 BLE 重启，不自动重试。</div>';
+    return;
+  }
+  try {
+    const v = await hapSetupChar.readValue();
+    const b = dvBytes(v);
+    // 响应 PDU：控制字段(0x02=Response) + TID + STATUS(0=成功) + body TLV8
+    let info = 'RX：' + hex(b);
+    let bodyTlv = null, status = null;
+    if (b.length >= 3) {
+      const cf = b[0], rxTid = b[1];
+      status = b[2];
+      bodyTlv = parseHapTlv(b.slice(3));
+      info += ' | CF=0x' + cf.toString(16).padStart(2,'0') + ' TID=' + rxTid + ' STATUS=' + status + ' | TLV: ' + bodyTlv.text;
+    }
+    log(info, status === 0 ? 'recv' : 'errline');
+    let vd = {text:'响应 STATUS=' + status + '（非 0，见 HAP Status 表：3=InsufficientAuthorization 5=InsufficientAuthentication 6=InvalidRequest）', c:'#ffc56b'};
+    if (status === 0 && bodyTlv && bodyTlv.items.length) {
+      const flat = [];
+      for (const it of bodyTlv.items) flat.push(it.t, it.v.length, ...Array.from(it.v));
+      vd = hapVerdict(Uint8Array.from(flat));
+    }
+    log(vd.text, 'recv');
+    $('hapProbeResult').innerHTML =
+      '<div>RX PDU：<code>' + hex(b) + '</code></div>' +
+      '<div>' + esc(info) + '</div>' +
+      '<div style="color:' + vd.c + '"><b>' + esc(vd.text) + '</b></div>';
+  } catch (e) {
+    log('RX 失败：' + (e.name||'Error') + ': ' + (e.message||e), 'errline');
+  }
+  log('── 本轮结束，不重试 ──');
+}
+
+$('btnHapEnum').onclick = hapEnum;
+$('btnHapM1').onclick = hapSendM1;
 
 $('resetParam').onchange = renderResetPreview;
 $('btnSoftReset').onclick = doSoftReset;
