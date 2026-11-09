@@ -19,6 +19,9 @@
   label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
   input{width:100%;background:#0c0e12;border:1px solid var(--line);border-radius:10px;
     color:var(--text);padding:11px 12px;font:13px/1.4 ui-monospace,Menlo,monospace}
+  select{width:100%;background:#0c0e12;border:1px solid var(--line);border-radius:10px;
+    color:var(--text);padding:11px 12px;font:13px/1.4 ui-monospace,Menlo,monospace}
+  button.warn{background:#3a1f22;color:#ff8f8f;border:1px solid #6b3036}
   button{appearance:none;border:none;border-radius:12px;padding:14px 16px;font-size:15px;
     font-weight:600;color:#0b0d11;background:var(--accent);width:100%;margin-top:10px}
   button:active{opacity:.7} button:disabled{opacity:.35}
@@ -102,13 +105,30 @@
 </div>
 
 <div class="card">
+  <label>HomeKit 配对清除 · 软复位 0x24（单次写入，需二次确认）</label>
+  <select id="resetParam">
+    <option value="2">参数 2 = 仅 ResetHomekitKeys（推荐，不动其他配置）</option>
+    <option value="55">参数 55 = 完整软复位（App 配网用，含清离线密钥/注册/WiFi）</option>
+    <option value="0">参数 0 = 硬复位（factoryReset(0)，影响最大，不建议）</option>
+  </select>
+  <div class="res" id="resetPreview"></div>
+  <button id="btnSoftReset" class="warn small">预览并发送一次（需确认）</button>
+  <div class="hint">
+    <b>目标</b>：清除锁端残留的 HAP 配对，使广播 Status Flags 从 <code>00</code>（已绑定）变回 <code>01</code>（可发现），家庭 App 才能重新添加。<br>
+    <b>帧依据</b>：反汇编 <code>augLockCmdFactoryResetWithParam</code> —— opcode <code>0x24</code>、参数写入 <code>[4]</code>、<code>[16]=0x02</code>、8 位补码校验在 <code>[3]</code>。<br>
+    <b>规则</b>：默认只预览不发送；一次只发一条；断链/异常即停，不自动重试；无任何批量或扫描功能。<br>
+    <b>判读</b>：复位可能让锁重启并断链，<b>断链 ≠ 失败</b>。唯一标准是重扫后广播第 3 字节 <code>00</code>→<code>01</code>。<br>
+    <b>风险</b>：这是写操作。参数 2 按位定义只清 HomeKit 密钥，但固件实际行为未实测；发送前请确认能重新录指纹/密码/卡。
+  </div>
+</div>
+
+<div class="card">
   <label>其他</label>
   <button id="btnEnum" class="ghost small">枚举 GATT</button>
   <button id="btnHap" class="ghost small">读 HAP 状态（未配对会失败，属正常）</button>
   <button id="btnOta" class="ghost small">测 OTA 通道</button>
   <button id="btnOtaState" class="ghost small">OTA GET_STATE (0x09，只读)</button>
-  <button id="btnProbe053" class="ghost small">0x53 探针（预览→单次，明文611）</button>
-  <button id="btnHkReset" class="ghost small">HomeKit_Reset (0x2E)</button>
+  <div class="hint">0x53 探针已移除：代码证实 611/613 授权后均加密，明文 SEC 帧发 611 必断链（notes/24）。旧「HomeKit_Reset 0x2E」按钮已移除：<code>0x2E</code> 是命令名表索引，不是 opcode，那次测试无效；真正命令是 <code>0x24</code>。</div>
 </div>
 
 </details>
@@ -155,6 +175,7 @@ let writeChar = null, notifyChar = null, secWriteChar = null, secNotifyChar = nu
 let otaCmdChar = null;
 let listenerBound = false;
 let lastNotify = null;
+let probeStopped = false;
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
@@ -260,7 +281,9 @@ async function connect() {
       });
       if (!listenerBound) {
         device.addEventListener('gattserverdisconnected', function(){
-          setConnected(false); log('⛔ 断链（gattserverdisconnected）— 已停止，不自动重试', 'errline');
+          setConnected(false);
+          probeStopped = true;
+          log('⛔ 断链（gattserverdisconnected）— 已停止，不自动重试', 'errline');
         });
         listenerBound = true;
       }
@@ -269,6 +292,8 @@ async function connect() {
     await device.gatt.connect();
     await setupChars();
     setConnected(true, device.name || '');
+    probeStopped = false;
+    $('btnSoftReset').disabled = false;
     log('已连接并订阅通知', 'recv');
   } catch (e) { log('连接失败：' + e.message, 'errline'); }
 }
@@ -516,35 +541,6 @@ async function otaGetState() {
       device.gatt.connected ? 'recv' : 'errline');
 }
 
-async function probe053() {
-  if (!await ensureConnected()) return;
-  const f = secFrame(0x53, 0, 0, 1);
-  const ok = confirm(
-    '将向【明文通道 611】发送一次 0x53 (GET_BOND_COUNT) 探针：\n\n' +
-    hex(f) + '\n\n' +
-    '规则：只发一次；断链即停，不自动重试；只读，不写。\n继续？'
-  );
-  if (!ok) { log('已取消 0x53 探针', 'errline'); return; }
-  $('btnProbe053').disabled = true;
-  lastNotify = null;
-  try {
-    await writeChar.writeValueWithResponse(f);
-    log('→ [611] 0x53 TX: ' + hex(f), 'send');
-  } catch (e) {
-    log('0x53 写入失败（' + (e.name||'Error') + ': ' + (e.message||e) + '）', 'errline');
-    $('btnProbe053').disabled = false;
-    return;
-  }
-  await sleep(1500);
-  if (!device.gatt.connected) {
-    log('⛔ 断链：明文通道不接受 0x53。已停止，不重试。', 'errline');
-  } else if (lastNotify) {
-    log('← 0x53 响应: ' + lastNotify + '（命令被处理，需解析响应码）', 'recv');
-  } else {
-    log('0x53 无响应（连接保持）— 排查帧格式/通知订阅/通道选择', 'errline');
-  }
-  $('btnProbe053').disabled = false;
-}
 
 async function copyLog() {
   const t = Array.from(logEl.children).map(function(d){return d.textContent.trim();}).join('\n');
@@ -565,7 +561,6 @@ $('btnEnum').onclick = enumerateAll;
 $('btnHap').onclick = readHap;
 $('btnOta').onclick = testOta;
 $('btnOtaState').onclick = otaGetState;
-$('btnProbe053').onclick = probe053;
 $('btnDis').onclick = readDis;
 
 $('btnHs').onclick = async function() {
@@ -586,18 +581,95 @@ $('btnSendSec').onclick = async function() {
     if (await ensureConnected()) { await secWriteChar.writeValueWithResponse(f); log('→ ' + hex(f), 'send'); }
   } catch (e) { log(e.message, 'errline'); }
 };
-$('btnHkReset').onclick = async function() {
-  if (!confirm('HomeKit_Reset 可能清掉 HomeKit 配对，继续？')) return;
+const RESET_FLAGS = [
+  [1,  'ResetOfflineKeys',   '清 August 离线握手密钥'],
+  [2,  'ResetHomekitKeys',   '清 HomeKit 配对密钥'],
+  [4,  'ResetParamsDefaults','恢复参数默认值'],
+  [8,  'ResetUnityStorage',  '清 Unity 存储（凭据）'],
+  [16, 'ResetWifi',          '清 WiFi 配置'],
+  [32, 'ResetRegist',        '清注册信息']
+];
+
+function softResetFrame(param) {
+  const f = new Uint8Array(18);
+  f[0]=0xEE; f[1]=0x24; f[4]=param & 0xFF; f[16]=0x02;
+  let s=0; for(let i=0;i<18;i++) s=(s+f[i])&0xFF;
+  f[3]=(0-s)&0xFF;
+  return f;
+}
+
+function flagDesc(param) {
+  if (param === 0) return '硬复位 factoryReset(0)';
+  const hit = RESET_FLAGS.filter(x => (param & x[0]) !== 0)
+                         .map(x => x[1] + '(' + x[0] + ')');
+  return hit.length ? hit.join(' + ') : '未知位组合';
+}
+
+function renderResetPreview() {
+  const param = parseInt($('resetParam').value, 10) || 0;
+  const f = softResetFrame(param);
+  const rows = [];
+  rows.push('<div>参数 <b>' + param + '</b> (0x' + param.toString(16).toUpperCase().padStart(2,'0') + ') → ' + flagDesc(param) + '</div>');
+  rows.push('<div>TX 帧　<code>' + hex(f) + '</code></div>');
+  rows.push('<div>布局　<code>EE</code> 魔数 · <code>24</code> opcode · <code>[3]</code> 校验 · <code>[4]</code> 参数 · <code>[16]=02</code></div>');
+  rows.push('<div>目标　<code>bd4ac611</code> (DATA 通道) · 校验和 <code>0x' + f[3].toString(16).toUpperCase().padStart(2,'0') + '</code>，全帧 sum&amp;0xFF=' + ((f.reduce((a,b)=>a+b,0))&0xFF) + '</div>');
+  $('resetPreview').innerHTML = rows.join('');
+  return f;
+}
+
+async function doSoftReset() {
+  if (probeStopped) { log('已发生断链，本轮已停止。如确需重试，请先点「连接门锁」重新建立连接。', 'errline'); return; }
+  const param = parseInt($('resetParam').value, 10) || 0;
+  const f = renderResetPreview();
+
+  const warn = '⚠️ 这是写操作，可能不可逆。\n\n' +
+    '将向 bd4ac611 (DATA 通道) 发送【一次】软复位帧：\n' +
+    hex(f) + '\n\n' +
+    '参数 ' + param + ' = ' + flagDesc(param) + '\n\n' +
+    '• 不会自动重试，断链即停\n' +
+    '• 不含任何扫描/批量功能\n' +
+    '• 请确认你能重新录入指纹/密码/卡\n\n继续？';
+  if (!confirm(warn)) { log('软复位已取消（未发送任何帧）', 'errline'); return; }
+  if (!confirm('最后确认：真的发送这一帧吗？\n' + hex(f))) {
+    log('软复位已取消（未发送任何帧）', 'errline'); return;
+  }
+
+  if (!await ensureConnected()) { log('未连接，已停止，未发送', 'errline'); return; }
+  probeStopped = true;
+  lastNotify = null;
+  $('btnSoftReset').disabled = true;
+
+  log('── 软复位单次实验开始 ──');
+  log('时间：' + new Date().toLocaleTimeString('zh-CN', {hour12:false}));
+  log('Characteristic：bd4ac611-0b45-11e3-8ffd-0800200c9a66 (DATA / writeWithResponse)');
+  log('参数：' + param + ' → ' + flagDesc(param));
+  log('TX：' + hex(f), 'send');
   try {
-    const f = plainFrame(0x2E);
-    if (await ensureConnected()) {
-      await writeChar.writeValueWithResponse(f);
-      log('→ HomeKit_Reset ' + hex(f), 'send');
-      await sleep(1500);
-      log(device.gatt.connected ? '✔ 连接保持' : '✘ 断链', device.gatt.connected?'recv':'errline');
-    }
-  } catch (e) { log(e.message, 'errline'); }
-};
+    await writeChar.writeValueWithResponse(f);
+    log('TX 写入完成（GATT 层成功，不代表锁已执行）', 'send');
+  } catch (e) {
+    log('TX 失败：' + (e.name||'Error') + ': ' + (e.message||e), 'errline');
+    log('⛔ 已停止，不重试。', 'errline');
+    return;
+  }
+
+  await sleep(2500);
+  if (!device.gatt.connected) {
+    log('⛔ 断链（gattserverdisconnected）— 已停止，不重试', 'errline');
+    log('注意：复位类命令本身可能导致锁重启并断链，断链 ≠ 命令未执行。', 'errline');
+  } else if (lastNotify) {
+    log('RX：' + lastNotify, 'recv');
+    log('连接保持且收到响应 → 命令可能已被处理', 'recv');
+  } else {
+    log('连接保持，无通知响应（setShouldFinishOnAcknowledge=true，可能只回 ACK）', 'errline');
+  }
+  log('── 本轮结束。判读标准：重扫广播第 3 字节 Status Flags，00→01 即成功 ──');
+  log('判读：01 = 未绑定 → 家庭 App 应能发现；仍为 00 = 本帧未生效，不自动重试');
+}
+
+$('resetParam').onchange = renderResetPreview;
+$('btnSoftReset').onclick = doSoftReset;
+renderResetPreview();
 
 if (!navigator.bluetooth) {
   log('此浏览器不支持 Web Bluetooth，请用 Android Chrome', 'errline');
