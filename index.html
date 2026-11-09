@@ -58,6 +58,25 @@
 </div>
 
 <div class="card">
+  <label>HomeKit 配对清除 · 软复位 0x24（单次写入，需二次确认）</label>
+  <select id="resetParam">
+    <option value="2">参数 2 = 仅 ResetHomekitKeys（推荐，不动其他配置）</option>
+    <option value="55">参数 55 = 完整软复位（App 配网用，含清离线密钥/注册/WiFi）</option>
+    <option value="0">参数 0 = 硬复位（factoryReset(0)，影响最大，不建议）</option>
+  </select>
+  <div class="res" id="resetPreview"></div>
+  <button id="btnSoftReset" class="warn small">预览并发送一次（需确认）</button>
+  <div class="hint">
+    <b>用法</b>：① 点「连接门锁」→ ② 核对下方预览帧 → ③ 点红按钮并确认两次 → ④ 用 nRF Connect 重扫广播，看第 3 字节是否 <code>00</code>→<code>01</code>。<br>
+    <b>目标</b>：清除锁端残留的 HAP 配对，让广播 Status Flags 从 <code>00</code>（已绑定）变回 <code>01</code>（可发现），家庭 App 才能重新添加。<br>
+    <b>帧依据</b>：反汇编 <code>augLockCmdFactoryResetWithParam</code> —— opcode <code>0x24</code>、参数写 <code>[4]</code>、<code>[16]=0x02</code>、8 位补码校验在 <code>[3]</code>。<br>
+    <b>规则</b>：默认只预览不发送；一次只发一条；断链/异常即停，不自动重试；无批量、无扫描。<br>
+    <b>判读</b>：复位可能让锁重启并断链，<b>断链 ≠ 失败</b>。唯一标准是重扫后广播第 3 字节翻转。<br>
+    <b>风险</b>：写操作。参数 2 按位定义只清 HomeKit 密钥，但固件实际行为未实测；执行前请确认能重新录指纹/密码/卡。
+  </div>
+</div>
+
+<div class="card">
   <label>序列号核对（无需密钥）</label>
   <button id="btnDis" class="ghost small">读 DIS 序列号 (0x2A25)</button>
   <div class="hint">
@@ -73,6 +92,17 @@
     自动完成：枚举服务 → 读 HAP 标识 → 逐个尝试 5 个候选密钥做加密握手 → 汇总
   </div>
   <div class="res" id="result"></div>
+</div>
+
+<div class="card">
+  <label>广播判读（只读，粘贴 nRF 里 0x004C 的 Manufacturer Data）</label>
+  <input id="advHex" placeholder="06310019D6275DA4C006002C00020236625233" spellcheck="false">
+  <button id="btnParseAdv" class="ghost small">解析并对比基线</button>
+  <div class="res" id="advResult"></div>
+  <div class="hint">
+    找法：nRF Connect 扫到 <code>L80006Z</code> 后<b>不要连</b>，展开 <code>Company: Apple, Inc. &lt;0x004C&gt;</code> 复制 Data。
+    可粘完整 AD 结构（含 <code>4C 00</code> 前缀），会自动定位 <code>06 31</code>。
+  </div>
 </div>
 
 <div class="card">
@@ -101,24 +131,6 @@
   <div class="grid2" style="margin-top:10px">
     <button id="btnSendPlain" class="ghost small">发到 611</button>
     <button id="btnSendSec" class="ghost small">发到 613</button>
-  </div>
-</div>
-
-<div class="card">
-  <label>HomeKit 配对清除 · 软复位 0x24（单次写入，需二次确认）</label>
-  <select id="resetParam">
-    <option value="2">参数 2 = 仅 ResetHomekitKeys（推荐，不动其他配置）</option>
-    <option value="55">参数 55 = 完整软复位（App 配网用，含清离线密钥/注册/WiFi）</option>
-    <option value="0">参数 0 = 硬复位（factoryReset(0)，影响最大，不建议）</option>
-  </select>
-  <div class="res" id="resetPreview"></div>
-  <button id="btnSoftReset" class="warn small">预览并发送一次（需确认）</button>
-  <div class="hint">
-    <b>目标</b>：清除锁端残留的 HAP 配对，使广播 Status Flags 从 <code>00</code>（已绑定）变回 <code>01</code>（可发现），家庭 App 才能重新添加。<br>
-    <b>帧依据</b>：反汇编 <code>augLockCmdFactoryResetWithParam</code> —— opcode <code>0x24</code>、参数写入 <code>[4]</code>、<code>[16]=0x02</code>、8 位补码校验在 <code>[3]</code>。<br>
-    <b>规则</b>：默认只预览不发送；一次只发一条；断链/异常即停，不自动重试；无任何批量或扫描功能。<br>
-    <b>判读</b>：复位可能让锁重启并断链，<b>断链 ≠ 失败</b>。唯一标准是重扫后广播第 3 字节 <code>00</code>→<code>01</code>。<br>
-    <b>风险</b>：这是写操作。参数 2 按位定义只清 HomeKit 密钥，但固件实际行为未实测；发送前请确认能重新录指纹/密码/卡。
   </div>
 </div>
 
@@ -666,6 +678,66 @@ async function doSoftReset() {
   log('── 本轮结束。判读标准：重扫广播第 3 字节 Status Flags，00→01 即成功 ──');
   log('判读：01 = 未绑定 → 家庭 App 应能发现；仍为 00 = 本帧未生效，不自动重试');
 }
+
+const ADV_BASELINE = {
+  sf: 0x00,
+  did: '19:D6:27:5D:A4:C0',
+  gsn: 44,
+  cn: 2,
+  hash: '36625233'
+};
+
+function parseAdv() {
+  let s = ($('advHex').value || '').replace(/0x/gi,'').replace(/[^0-9a-fA-F]/g,'');
+  if (s.length < 38) {
+    $('advResult').innerHTML = '<div class="hit" style="background:#3a1f22 !important;color:#ff8f8f">输入太短，请粘贴完整 Manufacturer Data（至少 19 字节）</div>';
+    return;
+  }
+  let b = [];
+  for (let i=0;i+1<s.length;i+=2) b.push(parseInt(s.substr(i,2),16));
+  let st = -1;
+  for (let i=0;i+1<b.length;i++) if (b[i]===0x06 && b[i+1]===0x31) { st=i; break; }
+  if (st < 0 || st+19 > b.length) {
+    $('advResult').innerHTML = '<div class="hit" style="background:#3a1f22 !important;color:#ff8f8f">未找到 06 31（HAP regular adv）标记，确认粘的是 Apple 0x004C 那段</div>';
+    return;
+  }
+  const a = b.slice(st, st+19);
+  const sf   = a[2];
+  const did  = Array.from(a.slice(3,9), x=>x.toString(16).padStart(2,'0').toUpperCase()).join(':');
+  const cat  = a[9] | (a[10]<<8);
+  const gsn  = a[11] | (a[12]<<8);
+  const cn   = a[13];
+  const hash = Array.from(a.slice(15,19), x=>x.toString(16).padStart(2,'0').toUpperCase()).join('');
+  const base = ADV_BASELINE;
+  const changed = [];
+  if (sf   !== base.sf)   changed.push('StatusFlags');
+  if (did  !== base.did)  changed.push('DeviceID');
+  if (gsn  !== base.gsn)  changed.push('GSN');
+  if (cn   !== base.cn)   changed.push('ConfigNum');
+  if (hash !== base.hash) changed.push('SetupHash');
+
+  const rows = [];
+  rows.push('<div>原始：<code>' + hex(new Uint8Array(a)) + '</code></div>');
+  rows.push('<div><b>Status Flags</b> = <code>0x' + sf.toString(16).padStart(2,'0').toUpperCase() + '</code> → <b>' +
+    (sf & 1 ? '01 未绑定 / 可发现' : '00 已绑定 / 不可发现') + '</b>（基线 0x00）</div>');
+  rows.push('<div>Device ID = <code>' + did + '</code>（基线 ' + base.did + '）</div>');
+  rows.push('<div>Category = ' + cat + ' (Locks) · GSN = ' + gsn + '（基线 ' + base.gsn + '）· ConfigNum = ' + cn + '</div>');
+  rows.push('<div>Setup Hash = <code>' + hash + '</code>（基线 ' + base.hash + '）</div>');
+  rows.push('<div>与基线差异：<b>' + (changed.length ? changed.join(', ') : '无（完全一致）') + '</b></div>');
+
+  let verdict, color;
+  if (sf & 1) {
+    verdict = '✔ 成功：锁已回到未绑定态。立刻去家庭 App 添加配件，输 232-06-264。'; color = '#3ddc84';
+  } else if (changed.length) {
+    verdict = '⚠ 锁确实变了（' + changed.join(', ') + '），但 Status Flags 仍为 00：帧被执行了，HomeKit 配对却没被清。下一步考虑参数 55，先别重复发 2。'; color = '#ffc56b';
+  } else {
+    verdict = '✘ 与基线完全一致：帧很可能被锁端拒绝（未授权明文帧）。不要重复发同一帧；需换思路（见 notes/27）。'; color = '#ff8f8f';
+  }
+  rows.push('<div style="color:' + color + '"><b>' + verdict + '</b></div>');
+  $('advResult').innerHTML = rows.join('');
+  log('广播判读：SF=0x' + sf.toString(16).toUpperCase() + '，差异=' + (changed.join(',')||'无') + ' → ' + verdict.slice(0,24), 'recv');
+}
+$('btnParseAdv').onclick = parseAdv;
 
 $('resetParam').onchange = renderResetPreview;
 $('btnSoftReset').onclick = doSoftReset;
